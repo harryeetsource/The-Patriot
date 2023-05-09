@@ -869,9 +869,9 @@ func main() {
 	)
 	storeAppList.OnSelected = func(id widget.ListItemID) {
 		appFullName := storeApps[id]
-		command := "powershell -command \"Get-AppxPackage -AllUsers -Name \\\"" + appFullName + "\\\" | Remove-AppxPackage\""
-
+		command := "powershell -command \"Get-AppxPackage -AllUsers -Name " + appFullName + " | Remove-AppxPackage\""
 		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appFullName + "\n")
+		logOutput.SetText(logOutput.Text + "Command: " + command + "\n")
 
 		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
 		if err != nil {
@@ -882,6 +882,7 @@ func main() {
 		storeApps, _ = getWindowsStoreApps(logOutput)
 		storeAppList.Refresh()
 	}
+
 	// List of Driver Packages
 	driverPackageList := widget.NewList(
 		func() int {
