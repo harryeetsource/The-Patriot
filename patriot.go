@@ -922,15 +922,12 @@ func main() {
 
 	driverPackageList.OnSelected = func(id widget.ListItemID) {
 		driverPackageName := driverPackages[id].PublishedName
-		command := "pnputil /d \"" + driverPackageName + "\""
+		command := "/d \"" + driverPackageName + "\""
 		logOutput.SetText(logOutput.Text + "Deleting driver package: " + driverPackageName + "\n")
 
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
-		if err != nil {
-			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
-		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
-		}
+		// Use execCommandWithPrompt to request administrative privileges
+		execCommandWithPrompt("pnputil.exe", command)
+
 		driverPackages, _, _ = getDriverPackages(logOutput)
 		driverPackageList.Refresh()
 	}
