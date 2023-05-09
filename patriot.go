@@ -380,26 +380,42 @@ func execCommandWithUserInput(cmdName string, args ...string) (string, error) {
 }
 
 func getWMICApps(logOutput *widget.Entry) ([]WMICApp, error) {
-	command := "wmic product get IdentifyingNumber, Name /format:csv"
+	command := "wmic product get IdentifyingNumber, Name /format:list"
 	output, err := exec.Command("cmd", "/C", command).Output()
 	if err != nil {
 		return nil, err
 	}
 
 	lines := strings.Split(string(output), "\n")
-	apps := make([]WMICApp, 0, len(lines))
+	apps := make([]WMICApp, 0)
 
-	for _, line := range lines[1:] {
-		cells := strings.Split(line, ",")
+	var currentApp WMICApp
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if currentApp.GUID != "" && currentApp.Name != "" {
+				apps = append(apps, currentApp)
+			}
+			currentApp = WMICApp{}
+			continue
+		}
 
-		if len(cells) >= 3 {
-			guid := strings.TrimSpace(cells[0])
-			name := strings.TrimSpace(cells[1])
+		keyValue := strings.SplitN(line, "=", 2)
+		if len(keyValue) == 2 {
+			key := strings.TrimSpace(keyValue[0])
+			value := strings.TrimSpace(keyValue[1])
 
-			if guid != "" && name != "" {
-				apps = append(apps, WMICApp{Name: name, GUID: guid})
+			switch key {
+			case "IdentifyingNumber":
+				currentApp.GUID = value
+			case "Name":
+				currentApp.Name = value
 			}
 		}
+	}
+
+	if currentApp.GUID != "" && currentApp.Name != "" {
+		apps = append(apps, currentApp)
 	}
 
 	return apps, nil
