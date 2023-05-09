@@ -61,6 +61,10 @@ type ProcessEntry32 struct {
 	dwFlags             uint32
 	szExeFile           [syscall.MAX_PATH]uint16
 }
+type WMICApp struct {
+	Name string
+	GUID string
+}
 
 func setMemory(ptr unsafe.Pointer, value byte, size uintptr) {
 	bytes := make([]byte, size)
@@ -375,27 +379,30 @@ func execCommandWithUserInput(cmdName string, args ...string) (string, error) {
 	return out.String(), nil
 }
 
-func getWMICApps(logOutput *widget.Entry) ([]string, error) {
-	wmicApps := []string{}
-	output, err := execCommand(logOutput, "wmic", "product", "get", "IdentifyingNumber,Name")
+func getWMICApps(logOutput *widget.Entry) ([]WMICApp, error) {
+	command := "wmic product get IdentifyingNumber, Name /format:csv"
+	output, err := exec.Command("cmd", "/C", command).Output()
 	if err != nil {
 		return nil, err
 	}
-	input := strings.NewReader(output)
-	scanner := bufio.NewScanner(input)
-	scanner.Scan() // Skip the header line
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			delimiter := strings.Index(line, "  ")
-			if delimiter != -1 {
-				appId := line[:delimiter]
-				appName := strings.TrimSpace(line[delimiter+2:])
-				wmicApps = append(wmicApps, appId+","+appName)
+
+	lines := strings.Split(string(output), "\n")
+	apps := make([]WMICApp, 0, len(lines))
+
+	for _, line := range lines[1:] {
+		cells := strings.Split(line, ",")
+
+		if len(cells) >= 3 {
+			guid := strings.TrimSpace(cells[0])
+			name := strings.TrimSpace(cells[1])
+
+			if guid != "" && name != "" {
+				apps = append(apps, WMICApp{Name: name, GUID: guid})
 			}
 		}
 	}
-	return wmicApps, nil
+
+	return apps, nil
 }
 
 func getWindowsStoreApps(logOutput *widget.Entry) ([]string, error) {
@@ -922,13 +929,14 @@ func main() {
 			return widget.NewLabel("Template")
 		},
 		func(index widget.ListItemID, item fyne.CanvasObject) {
-			item.(*widget.Label).SetText(wmicApps[index])
+			item.(*widget.Label).SetText(wmicApps[index].Name + " (" + wmicApps[index].GUID + ")")
 		},
 	)
+
 	wmicAppList.OnSelected = func(id widget.ListItemID) {
-		appId := wmicApps[id]
-		command := "wmic product where \"IdentifyingNumber='" + appId + "'\" call uninstall /nointeractive"
-		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appId + "\n")
+		app := wmicApps[id]
+		command := "wmic product where \"IdentifyingNumber='" + app.GUID + "'\" call uninstall /nointeractive"
+		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + app.Name + " (" + app.GUID + ")\n")
 
 		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
 		if err != nil {
@@ -939,6 +947,7 @@ func main() {
 
 		wmicAppList.Refresh()
 	}
+
 	// Create a new progress bar for the memory dump tab
 	dumpProgress := widget.NewProgressBar()
 	dumpProgress.Resize(fyne.NewSize(400, 10))
