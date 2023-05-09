@@ -856,19 +856,25 @@ func main() {
 	}
 
 	// List of WMIC Apps
-	wmicApps, _ := getWMICApps(logOutput)
+	// List of WMIC Apps
 	wmicAppList := widget.NewList(
 		func() int {
+			// Retrieve the list of WMIC apps every time the tab is selected
+			wmicApps, _ := getWMICApps(logOutput)
 			return len(wmicApps)
 		},
 		func() fyne.CanvasObject {
 			return widget.NewLabel("Template")
 		},
 		func(index widget.ListItemID, item fyne.CanvasObject) {
+			// Retrieve the list of WMIC apps every time the tab is selected
+			wmicApps, _ := getWMICApps(logOutput)
 			item.(*widget.Label).SetText(wmicApps[index])
 		},
 	)
 	wmicAppList.OnSelected = func(id widget.ListItemID) {
+		// Retrieve the list of WMIC apps every time the tab is selected
+		wmicApps, _ := getWMICApps(logOutput)
 		appId := wmicApps[id]
 		command := "wmic product where \"IdentifyingNumber='" + appId + "'\" call uninstall /nointeractive"
 		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appId + "\n")
@@ -879,9 +885,9 @@ func main() {
 		} else {
 			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
 		}
-		wmicApps, _ = getWMICApps(logOutput)
 		wmicAppList.Refresh()
 	}
+
 	// Create a new progress bar for the memory dump tab
 	dumpProgress := widget.NewProgressBar()
 	dumpProgress.Resize(fyne.NewSize(400, 10))
