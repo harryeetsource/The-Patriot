@@ -869,7 +869,8 @@ func main() {
 	)
 	storeAppList.OnSelected = func(id widget.ListItemID) {
 		appFullName := storeApps[id]
-		command := "powershell -command \"Get-AppxPackage -AllUsers -Name " + appFullName + " | Remove-AppxPackage\""
+		command := "powershell -command \"Get-AppxPackage -AllUsers -Name \\\"" + appFullName + "\\\" | Remove-AppxPackage\""
+
 		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appFullName + "\n")
 
 		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
@@ -922,11 +923,10 @@ func main() {
 
 	driverPackageList.OnSelected = func(id widget.ListItemID) {
 		driverPackageName := driverPackages[id].PublishedName
-		command := "/d \"" + driverPackageName + "\""
 		logOutput.SetText(logOutput.Text + "Deleting driver package: " + driverPackageName + "\n")
 
 		// Use execCommandWithPrompt to request administrative privileges
-		execCommandWithPrompt("pnputil.exe", command)
+		execCommandWithPrompt("pnputil.exe", "/d", driverPackageName)
 
 		driverPackages, _, _ = getDriverPackages(logOutput)
 		driverPackageList.Refresh()
