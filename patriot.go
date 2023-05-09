@@ -950,16 +950,14 @@ func main() {
 	)
 
 	wmicAppList.OnSelected = func(id widget.ListItemID) {
-		app := wmicApps[id]
-		command := "wmic product where \"IdentifyingNumber='" + app.GUID + "'\" call uninstall /nointeractive"
-		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + app.Name + " (" + app.GUID + ")\n")
+		appId := wmicApps[id].GUID
+		appName := wmicApps[id].Name
+		command := "wmic"
+		args := []string{"product", "where", "Caption='" + appName + "'", "call", "uninstall"}
 
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
-		if err != nil {
-			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\nOutput: " + string(output) + "\n")
-		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
-		}
+		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appName + " (" + appId + ")\n")
+
+		execCommandWithPrompt(command, args...)
 
 		wmicAppList.Refresh()
 	}
