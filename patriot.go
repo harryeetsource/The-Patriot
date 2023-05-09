@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"image/color"
 	"log"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"golang.org/x/sys/windows"
 )
@@ -729,22 +731,77 @@ func performSystemCleanup(progressChan chan float64, doneChan chan bool, progres
 	}
 	doneChan <- true
 }
+
+type CustomTheme struct {
+	originalTheme fyne.Theme
+}
+
+func (c CustomTheme) ForegroundColor() color.Color {
+	return color.White
+}
+
+func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	return c.originalTheme.Color(name, variant)
+}
+
+func (c CustomTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return c.originalTheme.Font(style)
+}
+
+func (c CustomTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return c.originalTheme.Icon(name)
+}
+
+func (c CustomTheme) Size(name fyne.ThemeSizeName) float32 {
+	return c.originalTheme.Size(name)
+}
+func newCustomTheme(baseTheme fyne.Theme) fyne.Theme {
+	return &CustomTheme{originalTheme: baseTheme}
+}
+
+func (c CustomTheme) ButtonColor() color.Color {
+	return color.Black
+}
+
+type Theme interface {
+	BackgroundColor() color.Color
+	ButtonColor() color.Color
+	DisabledButtonColor() color.Color
+	DisabledTextColor() color.Color
+	ForegroundColor() color.Color
+	HoverColor() color.Color
+	PlaceHolderColor() color.Color
+	PrimaryColor() color.Color
+	ScrollBarColor() color.Color
+	ShadowColor() color.Color
+	TextSize() int
+	TextFont() fyne.Resource
+	TextBoldFont() fyne.Resource
+	TextItalicFont() fyne.Resource
+	TextBoldItalicFont() fyne.Resource
+	TextMonospaceFont() fyne.Resource
+	Padding() int
+	IconInlineSize() int
+	ScrollBarSize() int
+	ScrollBarSmallSize() int
+}
+
 func main() {
-	fmt.Println("(-)Booting up the Patriot... please wait X)")
+	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
 	os.Setenv("FYNE_RENDER", "software")
 	myApp := app.New()
+	myApp.Settings().SetTheme(theme.DarkTheme())
 	myWindow := myApp.NewWindow("The Patriot")
 	progressBar := widget.NewProgressBar()
 	numCommands := 18
 	progressBar.Max = float64(numCommands)
-	// Log output widget
+
 	logOutput := widget.NewEntry()
 	logOutput.MultiLine = true
 	logOutput.Disable()
-	logOutputScroll := container.NewScroll(logOutput)
-	logOutputTab := container.NewTabItem("Log Output", logOutputScroll)
+
 	driverPackages, _, _ := getDriverPackages(logOutput)
-	wmicApps, _ := getWMICApps(logOutput)
+	logOutputContainer := container.NewScroll(logOutput)
 	storeApps, _ := getWindowsStoreApps(logOutput)
 	// System cleanup button
 	cleanupButton := widget.NewButton("Perform System Cleanup", func() {
@@ -758,7 +815,7 @@ func main() {
 				progressBar.SetValue(currentProgress + progress)
 			}
 		}()
-		wmicApps = nil // clear wmicApps before getting new data
+
 		go performSystemCleanup(progressChan, doneChan, progressBar, logOutput)
 		go func() {
 			<-doneChan
@@ -854,8 +911,9 @@ func main() {
 		driverPackages, _, _ = getDriverPackages(logOutput)
 		driverPackageList.Refresh()
 	}
+
 	// List of WMIC Apps
-	wmicApps, _ = getWMICApps(logOutput)
+	wmicApps, _ := getWMICApps(logOutput)
 	wmicAppList := widget.NewList(
 		func() int {
 			return len(wmicApps)
@@ -867,7 +925,6 @@ func main() {
 			item.(*widget.Label).SetText(wmicApps[index])
 		},
 	)
-
 	wmicAppList.OnSelected = func(id widget.ListItemID) {
 		appId := wmicApps[id]
 		command := "wmic product where \"IdentifyingNumber='" + appId + "'\" call uninstall /nointeractive"
@@ -875,11 +932,11 @@ func main() {
 
 		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
 		if err != nil {
-			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
+			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\nOutput: " + string(output) + "\n")
 		} else {
 			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
 		}
-		wmicApps, _ = getWMICApps(logOutput)
+
 		wmicAppList.Refresh()
 	}
 	// Create a new progress bar for the memory dump tab
@@ -940,18 +997,15 @@ func main() {
 		progressBar,
 		scrollContainer,
 	)
-
-	logOutputTab = container.NewTabItem("Log Output", container.NewScroll(logOutput))
+	logTab := container.NewTabItem("Log Output", logOutputContainer)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Windows Store Apps", storeAppList),
 		container.NewTabItem("Driver Packages", driverPackageList),
 		container.NewTabItem("WMIC Apps", wmicAppList),
 		container.NewTabItem("System Cleanup", cleanupTab),
-		logOutputTab,
+		logTab,
 	)
-
 	tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
-
 	myWindow.SetContent(tabs)
 	myWindow.Resize(fyne.NewSize(800, 600))
 	myWindow.ShowAndRun()
