@@ -730,7 +730,7 @@ func performSystemCleanup(progressChan chan float64, doneChan chan bool, progres
 	doneChan <- true
 }
 func main() {
-	fmt.Println("(-)Booting up the Patriot... please wait X)")
+	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
 	os.Setenv("FYNE_RENDER", "software")
 	myApp := app.New()
 	myWindow := myApp.NewWindow("The Patriot")
@@ -743,7 +743,7 @@ func main() {
 	logOutput.Disable()
 
 	driverPackages, _, _ := getDriverPackages(logOutput)
-	wmicApps, _ := getWMICApps(logOutput)
+	logOutputContainer := container.NewScroll(logOutput)
 	storeApps, _ := getWindowsStoreApps(logOutput)
 	// System cleanup button
 	cleanupButton := widget.NewButton("Perform System Cleanup", func() {
@@ -757,7 +757,7 @@ func main() {
 				progressBar.SetValue(currentProgress + progress)
 			}
 		}()
-		wmicApps = nil // clear wmicApps before getting new data
+
 		go performSystemCleanup(progressChan, doneChan, progressBar, logOutput)
 		go func() {
 			<-doneChan
@@ -771,7 +771,6 @@ func main() {
 		cleanupButton,
 		widget.NewLabel("Click the button to perform system cleanup."),
 		progressBar,
-		logOutput,
 	)
 	cleanupTab.Resize(fyne.NewSize(800, 600)) // set a fixed size for the cleanupTab container
 
@@ -856,6 +855,7 @@ func main() {
 	}
 
 	// List of WMIC Apps
+	wmicApps, _ := getWMICApps(logOutput)
 	wmicAppList := widget.NewList(
 		func() int {
 			return len(wmicApps)
@@ -878,7 +878,6 @@ func main() {
 		} else {
 			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
 		}
-		wmicApps, _ = getWMICApps(logOutput)
 		wmicAppList.Refresh()
 	}
 	// Create a new progress bar for the memory dump tab
@@ -937,15 +936,15 @@ func main() {
 		dumpButton,
 		widget.NewLabel("Click the button to dump memory."),
 		progressBar,
-		logOutput,
 		scrollContainer,
 	)
-
+	logTab := container.NewTabItem("Log Output", logOutputContainer)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Windows Store Apps", storeAppList),
 		container.NewTabItem("Driver Packages", driverPackageList),
 		container.NewTabItem("WMIC Apps", wmicAppList),
 		container.NewTabItem("System Cleanup", cleanupTab),
+		logTab,
 	)
 	tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
 	myWindow.SetContent(tabs)
