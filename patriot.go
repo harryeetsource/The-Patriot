@@ -868,12 +868,15 @@ func main() {
 		},
 	)
 	storeAppList.OnSelected = func(id widget.ListItemID) {
-		appFullName := storeApps[id]
-		command := `powershell -command "Get-AppxPackage -AllUsers -Name '` + appFullName + `' | Remove-AppxPackage"`
+		// Split the selected app's string into its components
+		appInfo := strings.Split(storeApps[id], ",")
+		appName := appInfo[0]
 
-		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appFullName + "\n")
-		logOutput.SetText(logOutput.Text + "Command: " + command + "\n")
+		// Construct the PowerShell command with the app name
+		command := "powershell -command \"Get-AppxPackage -AllUsers -Name '" + appName + "' | Remove-AppxPackage\""
+		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appName + "\n")
 
+		// Run the command and display the output
 		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
 		if err != nil {
 			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
