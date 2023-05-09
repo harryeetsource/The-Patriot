@@ -737,11 +737,12 @@ func main() {
 	progressBar := widget.NewProgressBar()
 	numCommands := 18
 	progressBar.Max = float64(numCommands)
-
+	// Log output widget
 	logOutput := widget.NewEntry()
 	logOutput.MultiLine = true
 	logOutput.Disable()
-
+	logOutputScroll := container.NewScroll(logOutput)
+	logOutputTab := container.NewTabItem("Log Output", logOutputScroll)
 	driverPackages, _, _ := getDriverPackages(logOutput)
 	wmicApps, _ := getWMICApps(logOutput)
 	storeApps, _ := getWindowsStoreApps(logOutput)
@@ -771,7 +772,6 @@ func main() {
 		cleanupButton,
 		widget.NewLabel("Click the button to perform system cleanup."),
 		progressBar,
-		logOutput,
 	)
 	cleanupTab.Resize(fyne.NewSize(800, 600)) // set a fixed size for the cleanupTab container
 
@@ -938,17 +938,20 @@ func main() {
 		dumpButton,
 		widget.NewLabel("Click the button to dump memory."),
 		progressBar,
-		logOutput,
 		scrollContainer,
 	)
 
+	logOutputTab = container.NewTabItem("Log Output", container.NewScroll(logOutput))
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Windows Store Apps", storeAppList),
 		container.NewTabItem("Driver Packages", driverPackageList),
 		container.NewTabItem("WMIC Apps", wmicAppList),
 		container.NewTabItem("System Cleanup", cleanupTab),
+		logOutputTab,
 	)
+
 	tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
+
 	myWindow.SetContent(tabs)
 	myWindow.Resize(fyne.NewSize(800, 600))
 	myWindow.ShowAndRun()
