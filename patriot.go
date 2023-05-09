@@ -743,7 +743,7 @@ func main() {
 	logOutput.Disable()
 
 	driverPackages, _, _ := getDriverPackages(logOutput)
-	logOutputContainer := container.NewScroll(logOutput)
+	wmicApps, _ := getWMICApps(logOutput)
 	storeApps, _ := getWindowsStoreApps(logOutput)
 	// System cleanup button
 	cleanupButton := widget.NewButton("Perform System Cleanup", func() {
@@ -757,7 +757,7 @@ func main() {
 				progressBar.SetValue(currentProgress + progress)
 			}
 		}()
-
+		wmicApps = nil // clear wmicApps before getting new data
 		go performSystemCleanup(progressChan, doneChan, progressBar, logOutput)
 		go func() {
 			<-doneChan
@@ -854,27 +854,21 @@ func main() {
 		driverPackages, _, _ = getDriverPackages(logOutput)
 		driverPackageList.Refresh()
 	}
-
 	// List of WMIC Apps
-	// List of WMIC Apps
+	wmicApps, _ = getWMICApps(logOutput)
 	wmicAppList := widget.NewList(
 		func() int {
-			// Retrieve the list of WMIC apps every time the tab is selected
-			wmicApps, _ := getWMICApps(logOutput)
 			return len(wmicApps)
 		},
 		func() fyne.CanvasObject {
 			return widget.NewLabel("Template")
 		},
 		func(index widget.ListItemID, item fyne.CanvasObject) {
-			// Retrieve the list of WMIC apps every time the tab is selected
-			wmicApps, _ := getWMICApps(logOutput)
 			item.(*widget.Label).SetText(wmicApps[index])
 		},
 	)
+
 	wmicAppList.OnSelected = func(id widget.ListItemID) {
-		// Retrieve the list of WMIC apps every time the tab is selected
-		wmicApps, _ := getWMICApps(logOutput)
 		appId := wmicApps[id]
 		command := "wmic product where \"IdentifyingNumber='" + appId + "'\" call uninstall /nointeractive"
 		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appId + "\n")
@@ -885,9 +879,9 @@ func main() {
 		} else {
 			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
 		}
+		wmicApps, _ = getWMICApps(logOutput)
 		wmicAppList.Refresh()
 	}
-
 	// Create a new progress bar for the memory dump tab
 	dumpProgress := widget.NewProgressBar()
 	dumpProgress.Resize(fyne.NewSize(400, 10))
@@ -947,13 +941,12 @@ func main() {
 		logOutput,
 		scrollContainer,
 	)
-	logTab := container.NewTabItem("Log Output", logOutputContainer)
+
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Windows Store Apps", storeAppList),
 		container.NewTabItem("Driver Packages", driverPackageList),
 		container.NewTabItem("WMIC Apps", wmicAppList),
 		container.NewTabItem("System Cleanup", cleanupTab),
-		logTab,
 	)
 	tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
 	myWindow.SetContent(tabs)
