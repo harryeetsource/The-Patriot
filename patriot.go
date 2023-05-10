@@ -300,6 +300,8 @@ func execCommand(logOutput *widget.Entry, command string, args ...string) (strin
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 	if err != nil {
+		// Include the output in the error message
+		err = fmt.Errorf("%v: %s", err, output)
 		logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
 		return "", err
 	}
@@ -871,17 +873,24 @@ func main() {
 		// Split the selected app's string into its components
 		appInfo := strings.Split(storeApps[id], ",")
 		appName := appInfo[0]
+		appFullName := appInfo[1]
 
-		// Construct the PowerShell command with the app name
-		command := "powershell -command \"Get-AppxPackage -AllUsers -Name '" + appName + "' | Remove-AppxPackage\""
+		// Validate the appFullName before running the command
+		if len(appFullName) == 0 || !strings.Contains(appFullName, "_") {
+			logOutput.SetText(logOutput.Text + "Invalid PackageFullName: " + appFullName + "\n")
+			return
+		}
+
+		// Construct the PowerShell command with the app full name
+		command := "Get-AppxPackage -AllUsers | Where-Object {$_.PackageFullName -eq '" + appFullName + "'} | Remove-AppxPackage"
 		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appName + "\n")
 
 		// Run the command and display the output
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
+		_, err := execCommand(logOutput, "powershell", "-command", command)
 		if err != nil {
 			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
 		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
+			logOutput.SetText(logOutput.Text + "Uninstalled Windows Store app: " + appName + "\n")
 		}
 		storeApps, _ = getWindowsStoreApps(logOutput)
 		storeAppList.Refresh()
