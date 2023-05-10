@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"image/color"
 	"log"
 	"os"
 	"os/exec"
@@ -12,13 +13,17 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+	"github.com/kardianos/service"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 var myApp fyne.App
@@ -36,6 +41,10 @@ type DriverPackage struct {
 const (
 	PROCESS_ALL_ACCESS = 0x1F0FFF
 	MEM_COMMIT         = 0x1000
+	SE_ASSIGNPRIMARYTOKEN_NAME = "SeAssignPrimaryTokenPrivilege"
+	SE_LOAD_DRIVER_NAME        = "SeLoadDriverPrivilege"
+	SE_SYSTEM_ENVIRONMENT_NAME = "SeSystemEnvironmentPrivilege"
+	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
 )
 
 type MEMORY_BASIC_INFORMATION struct {
@@ -59,7 +68,24 @@ type ProcessEntry32 struct {
 	dwFlags             uint32
 	szExeFile           [syscall.MAX_PATH]uint16
 }
+type WMICApp struct {
+	Name string
+	GUID string
+}
+type patriotService struct {
+	Service service.Service
+}
 
+func (s *patriotService) Start() {
+	go s.run()
+}
+func (s *patriotService) Stop() {
+	// Here, you can add any cleanup code or stop any long-running operations
+}
+func (s *patriotService) run() {
+	// Call your existing runPatriot function here
+	runPatriot()
+}
 func setMemory(ptr unsafe.Pointer, value byte, size uintptr) {
 	bytes := make([]byte, size)
 	for i := range bytes {
@@ -294,6 +320,8 @@ func execCommand(logOutput *widget.Entry, command string, args ...string) (strin
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 	if err != nil {
+		// Include the output in the error message
+		err = fmt.Errorf("%v: %s", err, output)
 		logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
 		return "", err
 	}
@@ -373,27 +401,46 @@ func execCommandWithUserInput(cmdName string, args ...string) (string, error) {
 	return out.String(), nil
 }
 
-func getWMICApps(logOutput *widget.Entry) ([]string, error) {
-	wmicApps := []string{}
-	output, err := execCommand(logOutput, "wmic", "product", "get", "IdentifyingNumber,Name")
+func getWMICApps(logOutput *widget.Entry) ([]WMICApp, error) {
+	command := "wmic product get IdentifyingNumber, Name /format:list"
+	output, err := exec.Command("cmd", "/C", command).Output()
 	if err != nil {
 		return nil, err
 	}
-	input := strings.NewReader(output)
-	scanner := bufio.NewScanner(input)
-	scanner.Scan() // Skip the header line
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			delimiter := strings.Index(line, "  ")
-			if delimiter != -1 {
-				appId := line[:delimiter]
-				appName := strings.TrimSpace(line[delimiter+2:])
-				wmicApps = append(wmicApps, appId+","+appName)
+
+	lines := strings.Split(string(output), "\n")
+	apps := make([]WMICApp, 0)
+
+	var currentApp WMICApp
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if currentApp.GUID != "" && currentApp.Name != "" {
+				apps = append(apps, currentApp)
+			}
+			currentApp = WMICApp{}
+			continue
+		}
+
+		keyValue := strings.SplitN(line, "=", 2)
+		if len(keyValue) == 2 {
+			key := strings.TrimSpace(keyValue[0])
+			value := strings.TrimSpace(keyValue[1])
+
+			switch key {
+			case "IdentifyingNumber":
+				currentApp.GUID = value
+			case "Name":
+				currentApp.Name = value
 			}
 		}
 	}
-	return wmicApps, nil
+
+	if currentApp.GUID != "" && currentApp.Name != "" {
+		apps = append(apps, currentApp)
+	}
+
+	return apps, nil
 }
 
 func getWindowsStoreApps(logOutput *widget.Entry) ([]string, error) {
@@ -729,10 +776,121 @@ func performSystemCleanup(progressChan chan float64, doneChan chan bool, progres
 	}
 	doneChan <- true
 }
-func main() {
+
+type CustomTheme struct {
+	originalTheme fyne.Theme
+}
+
+func (c CustomTheme) ForegroundColor() color.Color {
+	return color.White
+}
+
+func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	return c.originalTheme.Color(name, variant)
+}
+
+func (c CustomTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return c.originalTheme.Font(style)
+}
+
+func (c CustomTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return c.originalTheme.Icon(name)
+}
+
+func (c CustomTheme) Size(name fyne.ThemeSizeName) float32 {
+	return c.originalTheme.Size(name)
+}
+func newCustomTheme(baseTheme fyne.Theme) fyne.Theme {
+	return &CustomTheme{originalTheme: baseTheme}
+}
+
+func (c CustomTheme) ButtonColor() color.Color {
+	return color.Black
+}
+
+type Theme interface {
+	BackgroundColor() color.Color
+	ButtonColor() color.Color
+	DisabledButtonColor() color.Color
+	DisabledTextColor() color.Color
+	ForegroundColor() color.Color
+	HoverColor() color.Color
+	PlaceHolderColor() color.Color
+	PrimaryColor() color.Color
+	ScrollBarColor() color.Color
+	ShadowColor() color.Color
+	TextSize() int
+	TextFont() fyne.Resource
+	TextBoldFont() fyne.Resource
+	TextItalicFont() fyne.Resource
+	TextBoldItalicFont() fyne.Resource
+	TextMonospaceFont() fyne.Resource
+	Padding() int
+	IconInlineSize() int
+	ScrollBarSize() int
+	ScrollBarSmallSize() int
+}
+func runWithPrivileges(targetFunc func()) {
+	// Enable the required privileges
+	privileges := []string{
+		SE_ASSIGNPRIMARYTOKEN_NAME,
+		SE_LOAD_DRIVER_NAME,
+		SE_SYSTEM_ENVIRONMENT_NAME,
+		SE_TAKE_OWNERSHIP_NAME,
+	}
+
+	for _, privilege := range privileges {
+		err := enablePrivilege(privilege)
+		if err != nil {
+			log.Fatalf("Failed to enable %s: %v", privilege, err)
+		}
+	}
+
+	// Run the provided function with the required privileges
+	targetFunc()
+}
+func enablePrivilege(privilegeName string) error {
+	var token windows.Token
+	currentProcess, _ := windows.GetCurrentProcess()
+	err := windows.OpenProcessToken(currentProcess, windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token)
+
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+
+	var luid windows.LUID
+	err = windows.LookupPrivilegeValue(nil, windows.StringToUTF16Ptr(privilegeName), &luid)
+	if err != nil {
+		return err
+	}
+
+	privileges := windows.Tokenprivileges{
+		PrivilegeCount: 1,
+		Privileges: [1]windows.LUIDAndAttributes{
+			{
+				Luid:       luid,
+				Attributes: windows.SE_PRIVILEGE_ENABLED,
+			},
+		},
+	}
+
+	err = windows.AdjustTokenPrivileges(token, false, &privileges, 0, nil, nil)
+
+	if err != nil && err != windows.ERROR_NOT_ALL_ASSIGNED {
+		return err
+	}
+
+	return nil
+}
+func runPatriot() {
+	// Your existing main function code goes here
+	fmt.Println("Ensuring adequate privileges")
+	runWithPrivileges(func() {
 	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
 	os.Setenv("FYNE_RENDER", "software")
 	myApp := app.New()
+	myApp.Settings().SetTheme(theme.DarkTheme())
 	myWindow := myApp.NewWindow("The Patriot")
 	progressBar := widget.NewProgressBar()
 	numCommands := 18
@@ -787,19 +945,32 @@ func main() {
 		},
 	)
 	storeAppList.OnSelected = func(id widget.ListItemID) {
-		appFullName := storeApps[id]
-		command := "powershell -command \"Get-AppxPackage -AllUsers -Name " + appFullName + " | Remove-AppxPackage\""
-		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appFullName + "\n")
+		// Split the selected app's string into its components
+		appInfo := strings.Split(storeApps[id], ",")
+		appName := appInfo[0]
+		appFullName := appInfo[1]
 
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
+		// Validate the appFullName before running the command
+		if len(appFullName) == 0 || !strings.Contains(appFullName, "_") {
+			logOutput.SetText(logOutput.Text + "Invalid PackageFullName: " + appFullName + "\n")
+			return
+		}
+
+		// Construct the PowerShell command with the app full name
+		command := "Get-AppxPackage -AllUsers | Where-Object {$_.PackageFullName -eq '" + appFullName + "'} | Remove-AppxPackage"
+		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appName + "\n")
+
+		// Run the command and display the output
+		_, err := execCommand(logOutput, "powershell", "-command", command)
 		if err != nil {
 			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
 		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
+			logOutput.SetText(logOutput.Text + "Uninstalled Windows Store app: " + appName + "\n")
 		}
 		storeApps, _ = getWindowsStoreApps(logOutput)
 		storeAppList.Refresh()
 	}
+
 	// List of Driver Packages
 	driverPackageList := widget.NewList(
 		func() int {
@@ -841,15 +1012,11 @@ func main() {
 
 	driverPackageList.OnSelected = func(id widget.ListItemID) {
 		driverPackageName := driverPackages[id].PublishedName
-		command := "pnputil /d \"" + driverPackageName + "\""
 		logOutput.SetText(logOutput.Text + "Deleting driver package: " + driverPackageName + "\n")
 
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
-		if err != nil {
-			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
-		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
-		}
+		// Use execCommandWithPrompt to request administrative privileges
+		execCommandWithPrompt("pnputil.exe", "/d", driverPackageName)
+
 		driverPackages, _, _ = getDriverPackages(logOutput)
 		driverPackageList.Refresh()
 	}
@@ -864,22 +1031,23 @@ func main() {
 			return widget.NewLabel("Template")
 		},
 		func(index widget.ListItemID, item fyne.CanvasObject) {
-			item.(*widget.Label).SetText(wmicApps[index])
+			item.(*widget.Label).SetText(wmicApps[index].Name + " (" + wmicApps[index].GUID + ")")
 		},
 	)
-	wmicAppList.OnSelected = func(id widget.ListItemID) {
-		appId := wmicApps[id]
-		command := "wmic product where \"IdentifyingNumber='" + appId + "'\" call uninstall /nointeractive"
-		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appId + "\n")
 
-		output, err := exec.Command("cmd", "/C", command).CombinedOutput()
-		if err != nil {
-			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
-		} else {
-			logOutput.SetText(logOutput.Text + "Output: " + string(output) + "\n")
-		}
+	wmicAppList.OnSelected = func(id widget.ListItemID) {
+		appId := wmicApps[id].GUID
+		appName := wmicApps[id].Name
+		command := "wmic"
+		args := []string{"product", "where", "Caption='" + appName + "'", "call", "uninstall"}
+
+		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appName + " (" + appId + ")\n")
+
+		execCommandWithPrompt(command, args...)
+
 		wmicAppList.Refresh()
 	}
+
 	// Create a new progress bar for the memory dump tab
 	dumpProgress := widget.NewProgressBar()
 	dumpProgress.Resize(fyne.NewSize(400, 10))
@@ -950,4 +1118,38 @@ func main() {
 	myWindow.SetContent(tabs)
 	myWindow.Resize(fyne.NewSize(800, 600))
 	myWindow.ShowAndRun()
+})
+}
+func main() {
+	svcConfig := &service.Config{
+		Name:        "PatriotService",
+		DisplayName: "The Patriot Service",
+		Description: "This is The Patriot Service.",
+	}
+
+	p := &patriotService{}
+	s, err := service.New(p, svcConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	p.Service = s
+
+	logger, err := s.Logger(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if len(os.Args) > 1 {
+		err := service.Control(s, os.Args[1])
+		if err != nil {
+			log.Printf("Valid actions: %q\n", service.ControlAction)
+			log.Fatal(err)
+		}
+		return
+	}
+
+	err = s.Run()
+	if err != nil {
+		logger.Error(err)
+	}
 }
