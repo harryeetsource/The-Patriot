@@ -21,6 +21,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 var myApp fyne.App
@@ -38,6 +40,10 @@ type DriverPackage struct {
 const (
 	PROCESS_ALL_ACCESS = 0x1F0FFF
 	MEM_COMMIT         = 0x1000
+	SE_ASSIGNPRIMARYTOKEN_NAME = "SeAssignPrimaryTokenPrivilege"
+	SE_LOAD_DRIVER_NAME        = "SeLoadDriverPrivilege"
+	SE_SYSTEM_ENVIRONMENT_NAME = "SeSystemEnvironmentPrivilege"
+	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
 )
 
 type MEMORY_BASIC_INFORMATION struct {
@@ -810,8 +816,60 @@ type Theme interface {
 	ScrollBarSize() int
 	ScrollBarSmallSize() int
 }
+func runWithPrivileges(targetFunc func()) {
+	// Enable the required privileges
+	privileges := []string{
+		SE_ASSIGNPRIMARYTOKEN_NAME,
+		SE_LOAD_DRIVER_NAME,
+		SE_SYSTEM_ENVIRONMENT_NAME,
+		SE_TAKE_OWNERSHIP_NAME,
+	}
 
-func main() {
+	for _, privilege := range privileges {
+		err := enablePrivilege(privilege)
+		if err != nil {
+			log.Fatalf("Failed to enable %s: %v", privilege, err)
+		}
+	}
+
+	// Run the provided function with the required privileges
+	targetFunc()
+}
+func enablePrivilege(privilegeName string) error {
+	var token windows.Token
+	currentProcess, _ := windows.GetCurrentProcess()
+	err := windows.OpenProcessToken(currentProcess, windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token)
+
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+
+	var luid windows.LUID
+	err = windows.LookupPrivilegeValue(nil, windows.StringToUTF16Ptr(privilegeName), &luid)
+	if err != nil {
+		return err
+	}
+
+	privileges := windows.Tokenprivileges{
+		PrivilegeCount: 1,
+		Privileges: [1]windows.LUIDAndAttributes{
+			{
+				Luid:       luid,
+				Attributes: windows.SE_PRIVILEGE_ENABLED,
+			},
+		},
+	}
+
+	err = windows.AdjustTokenPrivileges(token, false, &privileges, 0, nil, nil)
+
+	if err != nil && err != windows.ERROR_NOT_ALL_ASSIGNED {
+		return err
+	}
+
+	return nil
+}
+func runPatriot() {
 	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
 	os.Setenv("FYNE_RENDER", "software")
 	myApp := app.New()
@@ -1043,4 +1101,8 @@ func main() {
 	myWindow.SetContent(tabs)
 	myWindow.Resize(fyne.NewSize(800, 600))
 	myWindow.ShowAndRun()
+}
+func main() {
+	fmt.Println("Ensuring adequate privileges")
+	runWithPrivileges(runPatriot)
 }
