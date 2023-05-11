@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/kardianos/service"
 
@@ -93,16 +94,40 @@ func enablePrivilege(privilegeName string) error {
 }
 func runPatriot() {
 	fmt.Println("Ensuring adequate privileges")
-	runWithPrivileges(startGUI)
+	runWithPrivileges(func() {
+		startGUI()
+	})
 }
+
 func startGUI() {
-	// Replace "patriot-gui" with the correct path to your patriot-gui executable
-	cmd := exec.Command("patriot-gui")
-	err := cmd.Run()
+	// Get the path of the current running process
+	runningPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to get executable path: %v", err)
+	}
+
+	// Print the path of the running executable
+	fmt.Println("Executable path:", runningPath)
+
+	// Print the current working directory
+	wd, _ := os.Getwd()
+	fmt.Println("Working directory:", wd)
+
+	// Get the directory containing the executable
+	exeDir := filepath.Dir(runningPath)
+
+	// Construct the path to patriot-gui.exe
+	patriotGUIPath := filepath.Join(exeDir, "patriot-gui.exe")
+	// Print the path to patriot-gui.exe
+	fmt.Println("Patriot-GUI path:", patriotGUIPath)
+	// Run patriot-gui.exe
+	cmd := exec.Command(patriotGUIPath)
+	err = cmd.Run()
 	if err != nil {
 		log.Printf("Failed to start GUI: %v", err)
 	}
 }
+
 func main() {
 	svcConfig := &service.Config{
 		Name:        "PatriotService",
