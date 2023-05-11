@@ -741,7 +741,7 @@ func performSystemCleanup(progressChan chan float64, doneChan chan bool, progres
 	}
 	fmt.Println("Checking for and installing Windows updates.")
 	progressChan <- stepProgress
-	output, err = execCommand(logOutput, "powershell", "-ep", "bypass", "-command", "Install-Module -Name PackageProvider -Force")
+	output, err = execCommand(logOutput, "powershell", "-ep", "bypass", "-command", "Install-Module -Name PackageProvider -Force -Confirm:$false")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
