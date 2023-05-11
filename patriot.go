@@ -94,6 +94,7 @@ func enablePrivilege(privilegeName string) error {
 }
 func runPatriot() {
 	fmt.Println("Ensuring adequate privileges")
+	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
 	runWithPrivileges(func() {
 		startGUI()
 	})
