@@ -819,11 +819,10 @@ type CustomTheme struct {
 	originalTheme fyne.Theme
 }
 
-func (c CustomTheme) ForegroundColor() color.Color {
-	return color.White
-}
-
 func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if name == theme.ColorNameForeground {
+		return color.RGBA{0, 255, 0, 255} // Green color
+	}
 	return c.originalTheme.Color(name, variant)
 }
 
@@ -874,7 +873,7 @@ func runPatriot() {
 	runWithPrivileges(func() {
 		os.Setenv("FYNE_RENDER", "software")
 		myApp := app.New()
-		myApp.Settings().SetTheme(theme.DarkTheme())
+		myApp.Settings().SetTheme(newCustomTheme(theme.DarkTheme()))
 		myWindow := myApp.NewWindow("The Patriot")
 		progressBar := widget.NewProgressBar()
 		numCommands := 18
