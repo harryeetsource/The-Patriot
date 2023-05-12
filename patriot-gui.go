@@ -1025,8 +1025,8 @@ type Theme interface {
 
 func runPatriot() {
 	// Your existing main function code goes here
+	os.Setenv("FYNE_RENDER", "software")
 	runWithPrivileges(func() {
-		os.Setenv("FYNE_RENDER", "software")
 		myApp := app.New()
 		myApp.Settings().SetTheme(newCustomTheme(theme.DarkTheme()))
 		myWindow := myApp.NewWindow("The Patriot")
