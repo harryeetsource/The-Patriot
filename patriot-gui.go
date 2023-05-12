@@ -1258,6 +1258,5 @@ func runPatriot() {
 	})
 }
 func main() {
-	os.Setenv("FYNE_RENDER", "software")
 	runPatriot()
 }

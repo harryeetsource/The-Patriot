@@ -95,6 +95,11 @@ func enablePrivilege(privilegeName string) error {
 func runPatriot() {
 	fmt.Println("Ensuring adequate privileges")
 	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
+	// Set the environment variable before starting the GUI
+	err := os.Setenv("FYNE_RENDER", "software")
+	if err != nil {
+		log.Fatalf("Failed to set FYNE_RENDER environment variable: %v", err)
+	}
 	runWithPrivileges(func() {
 		startGUI()
 	})
