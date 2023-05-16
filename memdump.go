@@ -162,7 +162,7 @@ var (
 	procLsaConnectUntrusted          = modSecur32.NewProc("LsaConnectUntrusted")
 	procLsaCallAuthenticationPackage = modSecur32.NewProc("LsaCallAuthenticationPackage")
 	procLsaFreeReturnBuffer          = modSecur32.NewProc("LsaFreeReturnBuffer")
-	procCloseHandle                  = modKernel32.NewProc("CloseHandle")
+	procCloseHandle                  = modkernel32.NewProc("CloseHandle")
 	procCreateToolhelp32Snapshot     = modkernel32.NewProc("CreateToolhelp32Snapshot")
 	procProcess32First               = modkernel32.NewProc("Process32FirstW")
 	procProcess32Next                = modkernel32.NewProc("Process32NextW")
