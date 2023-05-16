@@ -849,8 +849,8 @@ func relaunchWithNTPrivileges(programPath string) error {
 	}
 
 	// Get the token for the newly created process
-	var processToken windows.Token
-	err = windows.OpenProcessToken(pi.Process, windows.TOKEN_ALL_ACCESS, &processToken)
+	var processToken syscall.Token
+	err = syscall.OpenProcessToken(syscall.Handle(pi.Process), syscall.TOKEN_ALL_ACCESS, &processToken)
 	if err != nil {
 		// Terminate the newly created process if token retrieval fails
 		windows.TerminateProcess(pi.Process, 1)
@@ -862,14 +862,14 @@ func relaunchWithNTPrivileges(programPath string) error {
 	var tokenInformation [unsafe.Sizeof(systemToken)]byte
 	tokenInformationPtr := uintptr(unsafe.Pointer(&tokenInformation[0]))
 	tokenInformationSize := uint32(len(tokenInformation))
-	err = windows.GetTokenInformation(systemToken, windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize, &tokenInformationSize)
+	err = windows.GetTokenInformation(windows.Token(systemToken), windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize, &tokenInformationSize)
 	if err != nil {
 		// Terminate the newly created process if token information retrieval fails
 		windows.TerminateProcess(pi.Process, 1)
 		return fmt.Errorf("failed to get token information: %s", err)
 	}
 
-	err = windows.SetTokenInformation(processToken, windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize)
+	err = windows.SetTokenInformation(windows.Token(processToken), windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize)
 	if err != nil {
 		// Terminate the newly created process if token setting fails
 		windows.TerminateProcess(pi.Process, 1)
