@@ -372,7 +372,7 @@ func enablePrivilege(privilegeName string) error {
 
 	return nil
 }
-func runWithPrivileges(targetFunc func()) {
+func runWithPrivileges(targetFunc func()) error {
 	// Enable the required privileges
 	privileges := []string{
 		SE_ASSIGNPRIMARYTOKEN_NAME,
@@ -391,7 +391,10 @@ func runWithPrivileges(targetFunc func()) {
 
 	// Run the provided function with the required privileges
 	targetFunc()
+
+	return nil
 }
+
 func setMemory(ptr unsafe.Pointer, value byte, size uintptr) {
 	bytes := make([]byte, size)
 	for i := range bytes {
@@ -832,64 +835,61 @@ func initialize() {
 }
 
 func relaunchWithNTPrivileges(programPath string) error {
-	var si windows.StartupInfo
-	var pi windows.ProcessInformation
+	targetFunc := func() {
+		var si windows.StartupInfo
+		var pi windows.ProcessInformation
 
-	// Get the system token
-	systemToken, err := getSystemToken()
-	if err != nil {
-		return fmt.Errorf("failed to get system token: %s", err)
-	}
-	defer systemToken.Close()
+		// Create the process in a suspended state
+		err := windows.CreateProcess(nil, syscall.StringToUTF16Ptr(programPath), nil, nil, false, windows.CREATE_SUSPENDED, nil, nil, &si, &pi)
+		if err != nil {
+			log.Fatalf("CreateProcess failed: %s", err)
+		}
 
-	// Create the process in a suspended state
-	err = windows.CreateProcess(nil, syscall.StringToUTF16Ptr(programPath), nil, nil, false, windows.CREATE_SUSPENDED, nil, nil, &si, &pi)
-	if err != nil {
-		return fmt.Errorf("CreateProcess failed: %s", err)
-	}
+		// Get the token for the newly created process
+		var processToken windows.Token
+		err = windows.OpenProcessToken(pi.Process, windows.TOKEN_ALL_ACCESS, &processToken)
+		if err != nil {
+			// Terminate the newly created process if token retrieval fails
+			windows.TerminateProcess(pi.Process, 1)
+			log.Fatalf("Failed to retrieve process token: %s", err)
+		}
+		defer processToken.Close()
 
-	// Get the token for the newly created process
-	var processToken syscall.Token
-	err = syscall.OpenProcessToken(syscall.Handle(pi.Process), syscall.TOKEN_ALL_ACCESS, &processToken)
-	if err != nil {
-		// Terminate the newly created process if token retrieval fails
-		windows.TerminateProcess(pi.Process, 1)
-		return fmt.Errorf("failed to retrieve process token: %s", err)
-	}
-	defer processToken.Close()
+		// Set the system token for the new process
+		systemToken, err := getSystemToken()
+		if err != nil {
+			// Terminate the newly created process if system token retrieval fails
+			windows.TerminateProcess(pi.Process, 1)
+			log.Fatalf("Failed to get system token: %s", err)
+		}
+		defer systemToken.Close()
 
-	// Set the system token for the new process
-	var tokenInformation [unsafe.Sizeof(systemToken)]byte
-	tokenInformationPtr := uintptr(unsafe.Pointer(&tokenInformation[0]))
-	tokenInformationSize := uint32(len(tokenInformation))
-	err = windows.GetTokenInformation(windows.Token(systemToken), windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize, &tokenInformationSize)
-	if err != nil {
-		// Terminate the newly created process if token information retrieval fails
-		windows.TerminateProcess(pi.Process, 1)
-		return fmt.Errorf("failed to get token information: %s", err)
-	}
+		systemTokenHandle := windows.Handle(systemToken)
+		err = windows.SetTokenInformation(processToken, windows.TokenUser, (*byte)(unsafe.Pointer(&systemTokenHandle)), uint32(unsafe.Sizeof(systemTokenHandle)))
+		if err != nil {
+			// Terminate the newly created process if token setting fails
+			windows.TerminateProcess(pi.Process, 1)
+			log.Fatalf("Failed to set system token: %s", err)
+		}
 
-	err = windows.SetTokenInformation(windows.Token(processToken), windows.TokenUser, (*byte)(unsafe.Pointer(tokenInformationPtr)), tokenInformationSize)
-	if err != nil {
-		// Terminate the newly created process if token setting fails
-		windows.TerminateProcess(pi.Process, 1)
-		return fmt.Errorf("failed to set system token: %s", err)
-	}
+		// Resume the execution of the new process
+		_, err = windows.ResumeThread(pi.Thread)
+		if err != nil {
+			// Terminate the newly created process if resume fails
+			windows.TerminateProcess(pi.Process, 1)
+			log.Fatalf("Failed to resume thread: %s", err)
+		}
 
-	// Resume the execution of the new process
-	_, err = windows.ResumeThread(pi.Thread)
-	if err != nil {
-		// Terminate the newly created process if resume fails
-		windows.TerminateProcess(pi.Process, 1)
-		return fmt.Errorf("failed to resume thread: %s", err)
+		// Close the process and thread handles
+		windows.CloseHandle(pi.Process)
+		windows.CloseHandle(pi.Thread)
 	}
 
-	// Close the process and thread handles
-	windows.CloseHandle(pi.Process)
-	windows.CloseHandle(pi.Thread)
+	runWithPrivileges(targetFunc)
 
 	return nil
 }
+
 func getSystemToken() (syscall.Token, error) {
 	var (
 		luid        LUID
