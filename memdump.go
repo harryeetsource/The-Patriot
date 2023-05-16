@@ -38,16 +38,24 @@ type SHELLEXECUTEINFO struct {
 }
 
 const (
-	PROCESS_ALL_ACCESS           = 0x1F0FFF
-	MEM_COMMIT                   = 0x1000
-	SECURITY_ANONYMOUS_LOGON_RID = 0x00000007
-	SECURITY_LOCAL_SYSTEM_RID    = 0x00000012
-	SECURITY_NT_AUTHORITY        = 0x00000005
-	SE_DEBUG_NAME                = "SeDebugPrivilege"
-	SE_ASSIGNPRIMARYTOKEN_NAME   = "SeAssignPrimaryTokenPrivilege"
-	SE_LOAD_DRIVER_NAME          = "SeLoadDriverPrivilege"
-	SE_SYSTEM_ENVIRONMENT_NAME   = "SeSystemEnvironmentPrivilege"
-	SE_TAKE_OWNERSHIP_NAME       = "SeTakeOwnershipPrivilege"
+	PROCESS_ALL_ACCESS            = 0x1F0FFF
+	MEM_COMMIT                    = 0x1000
+	statusSuccess                 = 0
+	securityAnonymousLogonRid     = 0x00000007
+	securityLocalSystemRid        = 0x00000012
+	securityNtAuthority           = 0x00000005
+	securityPackageId             = 0x0000000a
+	securityTokenPrimary          = 1
+	securityImpersonation         = 2
+	securityDelegation            = 3
+	securityAnonymous             = 0
+	securityIdentification        = 1
+	securityImpersonationDisabled = 0
+	SE_DEBUG_NAME                 = "SeDebugPrivilege"
+	SE_ASSIGNPRIMARYTOKEN_NAME    = "SeAssignPrimaryTokenPrivilege"
+	SE_LOAD_DRIVER_NAME           = "SeLoadDriverPrivilege"
+	SE_SYSTEM_ENVIRONMENT_NAME    = "SeSystemEnvironmentPrivilege"
+	SE_TAKE_OWNERSHIP_NAME        = "SeTakeOwnershipPrivilege"
 )
 
 type PROCESS_MEMORY_COUNTERS_EX struct {
@@ -141,16 +149,14 @@ type LUIDAndAttributes struct {
 }
 
 var (
-	SECURITY_LOCAL_SYSTEM_SID = []byte{
-		1, 1, 0, 0, 0, 0, 0, 0, 0, 0, // Revision, SubAuthorityCount, IdentifierAuthority
-		SECURITY_NT_AUTHORITY,                                                                 // IdentifierAuthority
-		SECURITY_LOCAL_SYSTEM_RID & 0xFF, (SECURITY_LOCAL_SYSTEM_RID >> 8) & 0xFF, 0, 0, 0, 0, // SubAuthority
+	securityLocalSystemSid = []byte{
+		1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+		securityNtAuthority, securityLocalSystemRid & 0xFF, securityLocalSystemRid >> 8 & 0xFF, 0, 0, 0, 0,
 	}
 
-	SECURITY_ANONYMOUS_LOGON_SID = []byte{
-		1, 1, 0, 0, 0, 0, 0, 0, 0, 0, // Revision, SubAuthorityCount, IdentifierAuthority
-		SECURITY_NT_AUTHORITY,                                                                       // IdentifierAuthority
-		SECURITY_ANONYMOUS_LOGON_RID & 0xFF, (SECURITY_ANONYMOUS_LOGON_RID >> 8) & 0xFF, 0, 0, 0, 0, // SubAuthority
+	securityAnonymousSid = []byte{
+		1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+		securityNtAuthority, securityAnonymousLogonRid & 0xFF, securityAnonymousLogonRid >> 8 & 0xFF, 0, 0, 0, 0,
 	}
 )
 var (
@@ -886,13 +892,14 @@ func relaunchWithNTPrivileges(programPath string) error {
 }
 func getSystemToken() (syscall.Token, error) {
 	var (
-		luid       syscall.LUID
-		lsaHandle  syscall.Handle
-		lsaProcess syscall.Handle
+		luid        LUID
+		lsaHandle   syscall.Handle
+		lsaProcess  syscall.Handle
+		systemToken syscall.Token
 	)
 
 	// Register the logon process with the LSA
-	status, _, err := procLsaRegisterLogonProcessW.Call(
+	status, _, _ := procLsaRegisterLogonProcessW.Call(
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Memdump"))),
 		uintptr(unsafe.Pointer(&lsaHandle)),
 		uintptr(unsafe.Pointer(&luid)),
@@ -903,21 +910,20 @@ func getSystemToken() (syscall.Token, error) {
 	defer syscall.CloseHandle(lsaHandle)
 
 	// Connect to the LSA untrusted
-	status, _, err = procLsaConnectUntrusted.Call(uintptr(unsafe.Pointer(&lsaHandle)))
+	status, _, _ = procLsaConnectUntrusted.Call(uintptr(unsafe.Pointer(&lsaProcess)))
 	if status != 0 {
 		return 0, fmt.Errorf("failed to connect to LSA untrusted: %x", status)
 	}
 	defer syscall.CloseHandle(lsaProcess)
 
 	// Get the system token
-	var systemToken syscall.Token
 	tokenInformation := struct {
 		TokenType uint32
 		Token     syscall.Token
 	}{
 		TokenType: 2, // TokenPrimary
 	}
-	status, _, err = procLsaCallAuthenticationPackage.Call(
+	status, _, _ = procLsaCallAuthenticationPackage.Call(
 		uintptr(unsafe.Pointer(lsaHandle)),
 		0,
 		uintptr(unsafe.Pointer(&tokenInformation)),
@@ -931,6 +937,7 @@ func getSystemToken() (syscall.Token, error) {
 
 	return systemToken, nil
 }
+
 func isUserAnAdmin() (bool, error) {
 	shell32, err := syscall.LoadDLL("shell32.dll")
 	if err != nil {
