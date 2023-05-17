@@ -197,6 +197,36 @@ func isProcessRunningAsSystem(process *os.Process) (bool, error) {
 
 func (p *program) run() {
 	// Get the system token
+	createdManifest, err := checkAndCreateManifestFile()
+	if err != nil {
+		fmt.Println("Error checking or creating manifest file:", err)
+		return
+	}
+
+	isAdmin, err := isUserAnAdmin()
+	if err != nil {
+		fmt.Printf("Error checking if user is an admin: %s\n", err)
+		return
+	}
+
+	if !isAdmin || createdManifest {
+		programPath, err := os.Executable()
+		if err != nil {
+			fmt.Printf("Error getting the current executable path: %s\n", err)
+			return
+		}
+
+		err = runAsAdmin(programPath)
+		if err != nil {
+			fmt.Printf("Error running the program as an administrator: %s\n", err)
+			return
+		}
+
+		// Exit the current non-admin instance of the program
+		os.Exit(0)
+	}
+
+	// Get the system token
 	systemToken, err := getSystemToken()
 	if err != nil {
 		log.Fatalf("Failed to get system token: %s", err)
@@ -215,19 +245,13 @@ func (p *program) run() {
 	memdumpGUIPath := filepath.Join(execDir, "memdump-gui.exe")
 
 	// Launch memdump-gui.exe with NT privileges
-	guiProcessID, guiProcess, err := relaunchWithNTPrivileges(memdumpGUIPath, windows.Token(systemToken))
+	guiProcess, err := relaunchWithNTPrivileges(memdumpGUIPath, windows.Token(systemToken))
 	if err != nil {
 		log.Fatalf("Failed to launch memdump-gui.exe with NT privileges: %v", err)
 	}
 
-	// Run targetFunc with privileges for the launched process
-	targetFunc := func() {
-		// Add code that should run with elevated privileges for the memdump-gui.exe process here
-	}
-	runWithPrivileges(targetFunc, guiProcess)
-
 	// Check if the program is running with SYSTEM privileges
-	isSystem, err := isProcessRunningAsSystem(guiProcessID)
+	isSystem, err := isProcessRunningAsSystem(guiProcess)
 	if err != nil {
 		fmt.Printf("Error checking if the GUI is running as SYSTEM: %s\n", err)
 		return
@@ -238,6 +262,7 @@ func (p *program) run() {
 	} else {
 		fmt.Println("The memdump-gui.exe is NOT running as SYSTEM")
 	}
+
 }
 func (p *program) Stop(s service.Service) error {
 	// Any necessary cleanup before stopping the service
@@ -370,29 +395,22 @@ func getSystemToken() (syscall.Token, error) {
 			log.Fatalf("Failed to get system token: %x", status)
 		}
 	}
-
-	runWithPrivileges(targetFunc, guiProcess)
+	currentProcess := windows.CurrentProcess()
+	runWithPrivileges(targetFunc, currentProcess)
 
 	return systemToken, nil
 }
-func relaunchWithNTPrivileges(exePath string, token windows.Token) (uint32, windows.Handle, error) {
+func relaunchWithNTPrivileges(exePath string, token windows.Token) (*os.Process, error) {
 	cmd := exec.Command(exePath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Token: syscall.Token(token),
 	}
 	err := cmd.Start()
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 
-	// Get the process ID and process handle
-	processID := uint32(cmd.Process.Pid)
-	processHandle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, processID)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return processID, processHandle, nil
+	return cmd.Process, nil
 }
 
 func isRunningAsSystem() (bool, error) {
