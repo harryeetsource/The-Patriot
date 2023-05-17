@@ -372,3 +372,8 @@ RegQueryValueExW,-,-,advapi32.dll
 RegOpenKeyW,-,-,advapi32.dll
 RegCloseKey,-,-,advapi32.dll
 CommandLineToArgvW,-,-,shell32.dll
+S-1-16-4096
+SeShutdownPrivilege
+SeChangeNotifyPrivilege
+SeTimeZonePrivilege
+SeTcbPrivilege
