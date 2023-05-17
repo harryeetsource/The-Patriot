@@ -161,6 +161,12 @@ var (
 	procVirtualQueryEx               = modkernel32.NewProc("VirtualQueryEx")
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 func createToolhelp32Snapshot() (syscall.Handle, error) {
 	ret, _, err := procCreateToolhelp32Snapshot.Call(uintptr(0x2), uintptr(0x0))
 	if ret == uintptr(syscall.InvalidHandle) {
@@ -468,35 +474,10 @@ func isUserAnAdmin() (bool, error) {
 	return ret != 0, nil
 }
 func start(progressChannel chan<- float64, statusChannel chan string) {
-
-	isAdmin, err := isUserAnAdmin()
-	if err != nil {
-		statusChannel <- fmt.Sprintf("Error checking if user is an admin: %s", err)
-		return
-	}
-
-	if !isAdmin {
-		// Get the path of the current executable
-		programPath, err := os.Executable()
-		if err != nil {
-			statusChannel <- fmt.Sprintf("Error getting the current executable path: %s", err)
-			return
-		}
-
-		err = runAsAdmin(programPath)
-		if err != nil {
-			statusChannel <- fmt.Sprintf("Error running the program as an administrator: %s", err)
-			return
-		}
-
-		// Exit the current non-admin instance of the program
-		return
-	}
-
 	// Create an output folder with the current date
 	currentDate := time.Now().Format("2006-01-02")
 	folderName := fmt.Sprintf("output_%s", currentDate)
-	err = os.MkdirAll(folderName, 0755)
+	err := os.MkdirAll(folderName, 0755)
 	if err != nil {
 		statusChannel <- fmt.Sprintf("Error creating output folder: %s", err)
 		return
@@ -526,6 +507,7 @@ func start(progressChannel chan<- float64, statusChannel chan string) {
 	fmt.Println("Memory dumper output:")
 	fmt.Println(output)
 }
+
 func createAndRunMainWindow() {
 	progressChannel := make(chan float64)
 	statusChannel := make(chan string)
@@ -578,83 +560,6 @@ func createAndRunMainWindow() {
 	close(statusChannel)
 }
 
-func initialize() {
-	targetFunc := func() {
-		createdManifest, err := checkAndCreateManifestFile()
-		if err != nil {
-			fmt.Println("Error checking or creating manifest file:", err)
-			return
-		}
-
-		isAdmin, err := isUserAnAdmin()
-		if err != nil {
-			fmt.Printf("Error checking if user is an admin: %s\n", err)
-			return
-		}
-
-		if !isAdmin || createdManifest {
-			programPath, err := os.Executable()
-			if err != nil {
-				fmt.Printf("Error getting the current executable path: %s\n", err)
-				return
-			}
-
-			err = runAsAdmin(programPath)
-			if err != nil {
-				fmt.Printf("Error running the program as an administrator: %s\n", err)
-				return
-			}
-
-			// Exit the current non-admin instance of the program
-			os.Exit(0)
-		}
-		// Check if the program is running with SYSTEM privileges
-
-		isSystem, err := isRunningAsSystem()
-		if err != nil {
-			fmt.Printf("Error checking if the program is running as SYSTEM: %s\n", err)
-			return
-		}
-
-		if isSystem {
-			fmt.Println("The program is running as SYSTEM")
-		} else {
-			fmt.Println("The program is NOT running as SYSTEM")
-		}
-
-		if !isSystem {
-			// Get the system token
-			var systemToken syscall.Token
-			runWithPrivileges(func() {
-				systemToken, err = getSystemToken()
-				if err != nil {
-					log.Fatalf("Failed to get system token: %s", err)
-				}
-				fmt.Println("System token retrieved successfully")
-			})
-			defer systemToken.Close()
-
-			// Relaunch the program with SYSTEM privileges
-			programPath, err := os.Executable()
-			if err != nil {
-				fmt.Printf("Error getting the current executable path: %s\n", err)
-				return
-			}
-
-			err = relaunchWithNTPrivileges(programPath, windows.Token(systemToken))
-			if err != nil {
-				fmt.Printf("Error relaunching the program with NT privileges: %s\n", err)
-				return
-			}
-
-			// Exit the current instance of the program
-			os.Exit(0)
-		}
-	}
-	runWithPrivileges(targetFunc)
-	// Only create the main window and run the application if the program is running with SYSTEM privileges
-	createAndRunMainWindow()
-}
 func main() {
-	initialize()
+	createAndRunMainWindow()
 }
