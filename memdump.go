@@ -164,6 +164,7 @@ var (
 	modpsapi                         = windows.NewLazySystemDLL("psapi.dll")
 	modSecur32                       = syscall.NewLazyDLL("secur32.dll")
 	modAdvapi32                      = syscall.NewLazyDLL("advapi32.dll")
+	modSspiCli                       = syscall.NewLazyDLL("sspicli.dll")
 	procLsaRegisterLogonProcessW     = modSecur32.NewProc("LsaRegisterLogonProcess")
 	procLsaConnectUntrusted          = modSecur32.NewProc("LsaConnectUntrusted")
 	procLsaCallAuthenticationPackage = modSecur32.NewProc("LsaCallAuthenticationPackage")
@@ -863,9 +864,14 @@ func relaunchWithNTPrivileges(programPath string) error {
 			log.Fatalf("Failed to get system token: %s", err)
 		}
 		defer systemToken.Close()
+		var tokenUser windows.Tokenuser
+		sid, err := windows.StringToSid("S-1-5-18")
+		tokenUser.User = windows.SIDAndAttributes{
+			Sid:        sid,
+			Attributes: 0,
+		}
 
-		systemTokenHandle := windows.Handle(systemToken)
-		err = windows.SetTokenInformation(processToken, windows.TokenUser, (*byte)(unsafe.Pointer(&systemTokenHandle)), uint32(unsafe.Sizeof(systemTokenHandle)))
+		err = windows.SetTokenInformation(processToken, windows.TokenUser, (*byte)(unsafe.Pointer(&tokenUser)), uint32(unsafe.Sizeof(tokenUser)))
 		if err != nil {
 			// Terminate the newly created process if token setting fails
 			windows.TerminateProcess(pi.Process, 1)
