@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"unsafe"
@@ -14,14 +15,45 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+type SHELLEXECUTEINFO struct {
+	cbSize       uint32
+	fMask        uint32
+	hwnd         uintptr
+	lpVerb       *uint16
+	lpFile       *uint16
+	lpParameters *uint16
+	lpDirectory  *uint16
+	nShow        int32
+	hInstApp     uintptr
+	lpIDList     uintptr
+	lpClass      *uint16
+	hkeyClass    uintptr
+	dwHotKey     uint32
+	hIcon        uintptr
+	hProcess     uintptr
+}
+
 const (
-	SE_DEBUG_NAME              = "SeDebugPrivilege"
-	SE_ASSIGNPRIMARYTOKEN_NAME = "SeAssignPrimaryTokenPrivilege"
-	SE_LOAD_DRIVER_NAME        = "SeLoadDriverPrivilege"
-	SE_SYSTEM_ENVIRONMENT_NAME = "SeSystemEnvironmentPrivilege"
-	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
-	SE_TCB_NAME                = "SeTcbPrivilege"
-	SE_SHUTDOWN_PRIVILEGE      = "SeShutdownPrivilege"
+	SE_DEBUG_NAME                 = "SeDebugPrivilege"
+	SE_ASSIGNPRIMARYTOKEN_NAME    = "SeAssignPrimaryTokenPrivilege"
+	SE_LOAD_DRIVER_NAME           = "SeLoadDriverPrivilege"
+	SE_SYSTEM_ENVIRONMENT_NAME    = "SeSystemEnvironmentPrivilege"
+	SE_TAKE_OWNERSHIP_NAME        = "SeTakeOwnershipPrivilege"
+	SE_TCB_NAME                   = "SeTcbPrivilege"
+	SE_SHUTDOWN_PRIVILEGE         = "SeShutdownPrivilege"
+	PROCESS_ALL_ACCESS            = 0x1F0FFF
+	MEM_COMMIT                    = 0x1000
+	statusSuccess                 = 0
+	securityAnonymousLogonRid     = 0x00000007
+	securityLocalSystemRid        = 0x00000012
+	securityNtAuthority           = 0x00000005
+	securityPackageId             = 0x0000000a
+	securityTokenPrimary          = 1
+	securityImpersonation         = 2
+	securityDelegation            = 3
+	securityAnonymous             = 0
+	securityIdentification        = 1
+	securityImpersonationDisabled = 0
 )
 
 var (
@@ -105,6 +137,36 @@ func (p *program) Start(s service.Service) error {
 	go p.run()
 	return nil
 }
+func runAsAdmin(programPath string) error {
+	// Load shell32.dll library
+	shell32, err := syscall.LoadDLL("shell32.dll")
+	if err != nil {
+		return err
+	}
+	defer shell32.Release()
+
+	// Get the pointer to the ShellExecuteEx function
+	shellExecuteEx, err := shell32.FindProc("ShellExecuteExW")
+	if err != nil {
+		return err
+	}
+
+	// Prepare parameters for ShellExecuteEx function
+	sei := &SHELLEXECUTEINFO{
+		cbSize: uint32(unsafe.Sizeof(SHELLEXECUTEINFO{})),
+		lpVerb: syscall.StringToUTF16Ptr("runas"),
+		lpFile: syscall.StringToUTF16Ptr(programPath),
+		nShow:  syscall.SW_NORMAL,
+	}
+
+	// Call the ShellExecuteEx function to run the program as administrator
+	ret, _, err := shellExecuteEx.Call(uintptr(unsafe.Pointer(sei)))
+	if ret == 0 {
+		return err
+	}
+
+	return nil
+}
 func isProcessRunningAsSystem(process *os.Process) (bool, error) {
 	processHandle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, uint32(process.Pid))
 	if err != nil {
@@ -134,6 +196,56 @@ func isProcessRunningAsSystem(process *os.Process) (bool, error) {
 }
 
 func (p *program) run() {
+	// Get the system token
+	systemToken, err := getSystemToken()
+	if err != nil {
+		log.Fatalf("Failed to get system token: %s", err)
+	}
+
+	// Proceed with retrieving the memdump-gui.exe path
+	execPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to get current executable path: %v", err)
+	}
+
+	// Get the directory containing the current executable
+	execDir := filepath.Dir(execPath)
+
+	// Build the path to memdump-gui.exe
+	memdumpGUIPath := filepath.Join(execDir, "memdump-gui.exe")
+
+	// Launch memdump-gui.exe with NT privileges
+	guiProcessID, guiProcess, err := relaunchWithNTPrivileges(memdumpGUIPath, windows.Token(systemToken))
+	if err != nil {
+		log.Fatalf("Failed to launch memdump-gui.exe with NT privileges: %v", err)
+	}
+
+	// Run targetFunc with privileges for the launched process
+	targetFunc := func() {
+		// Add code that should run with elevated privileges for the memdump-gui.exe process here
+	}
+	runWithPrivileges(targetFunc, guiProcess)
+
+	// Check if the program is running with SYSTEM privileges
+	isSystem, err := isProcessRunningAsSystem(guiProcessID)
+	if err != nil {
+		fmt.Printf("Error checking if the GUI is running as SYSTEM: %s\n", err)
+		return
+	}
+
+	if isSystem {
+		fmt.Println("The memdump-gui.exe is running as SYSTEM")
+	} else {
+		fmt.Println("The memdump-gui.exe is NOT running as SYSTEM")
+	}
+}
+func (p *program) Stop(s service.Service) error {
+	// Any necessary cleanup before stopping the service
+	return nil
+}
+
+func main() {
+	// Get the current executable path
 	createdManifest, err := checkAndCreateManifestFile()
 	if err != nil {
 		fmt.Println("Error checking or creating manifest file:", err)
@@ -162,72 +274,13 @@ func (p *program) run() {
 		// Exit the current non-admin instance of the program
 		os.Exit(0)
 	}
-
-	// Proceed with retrieving the memdump-gui.exe path
-	execPath, err := os.Executable()
+	programPath, err := os.Executable()
 	if err != nil {
-		log.Fatalf("Failed to get current executable path: %v", err)
-	}
-
-	// Get the directory containing the current executable
-	execDir := filepath.Dir(execPath)
-
-	// Build the path to memdump-gui.exe
-	memdumpGUIPath := filepath.Join(execDir, "memdump-gui.exe")
-
-	// Get the system token
-	systemToken, err := getSystemToken()
-	if err != nil {
-		log.Fatalf("Failed to get system token: %v", err)
-	}
-
-	// Launch memdump-gui.exe with NT privileges
-	guiProcess, err := relaunchWithNTPrivileges(memdumpGUIPath, windows.Token(systemToken))
-    if err != nil {
-        log.Fatalf("Failed to launch memdump-gui.exe with NT privileges: %v", err)
-
-	// Check if the memdump-gui process is running with SYSTEM privileges
-	guiProcess, err := os.FindProcess(guiProcessID)
-	if err != nil {
-		fmt.Printf("Error finding the memdump-gui process: %s\n", err)
+		fmt.Printf("Error getting the current executable path: %s\n", err)
 		return
 	}
-
-	isSystem, err := isProcessRunningAsSystem(guiProcess)
-	if err != nil {
-		fmt.Printf("Error checking if the memdump-gui process is running as SYSTEM: %s\n", err)
-		return
-	}
-
-	if isSystem {
-		fmt.Println("The memdump-gui process is running as SYSTEM")
-	} else {
-		fmt.Println("The memdump-gui process is NOT running as SYSTEM")
-	}
-}
-
-
-
-func (p *program) Stop(s service.Service) error {
-	// Any necessary cleanup before stopping the service
-	return nil
-}
-
-func main() {
-	// Get the current executable path
-	_, err := checkAndCreateManifestFile()
-	if err != nil {
-		log.Fatalf("Failed to check and create manifest file: %v", err)
-	}
-	
-	execPath, err := os.Executable()
-	if err != nil {
-		log.Fatalf("Error getting the current executable path: %s\n", err)
-		return
-	}
-
 	// Get the directory of the current executable
-	execDir := filepath.Dir(execPath)
+	execDir := filepath.Dir(programPath)
 
 	// Search for the "memdump-gui.exe" in the same directory as the current executable
 	memdumpGUIPath := filepath.Join(execDir, "memdump-gui.exe")
@@ -318,64 +371,30 @@ func getSystemToken() (syscall.Token, error) {
 		}
 	}
 
-	runWithPrivileges(targetFunc)
+	runWithPrivileges(targetFunc, guiProcess)
+
 	return systemToken, nil
 }
-func relaunchWithNTPrivileges(programPath string, systemToken windows.Token) error {
-	targetFunc := func() {
-		var si windows.StartupInfo
-		var pi windows.ProcessInformation
-
-		// Duplicate the system token
-		var duplicatedToken windows.Token
-		err := windows.DuplicateTokenEx(
-			systemToken,
-			windows.TOKEN_ALL_ACCESS,
-			nil,
-			windows.SecurityImpersonation,
-			windows.TokenPrimary,
-			&duplicatedToken,
-		)
-		if err != nil {
-			log.Fatalf("Failed to duplicate the system token: %s", err)
-		}
-		defer duplicatedToken.Close()
-
-		// Create the process with the duplicated system token
-		err = windows.CreateProcessAsUser(
-			duplicatedToken,
-			syscall.StringToUTF16Ptr(programPath),
-			nil,
-			nil,
-			nil,
-			false,
-			windows.CREATE_SUSPENDED,
-			nil,
-			nil,
-			&si,
-			&pi,
-		)
-		if err != nil {
-			log.Fatalf("CreateProcessAsUser failed: %s", err)
-		}
-
-		// Resume the execution of the new process
-		_, err = windows.ResumeThread(pi.Thread)
-		if err != nil {
-			// Terminate the newly created process if resume fails
-			windows.TerminateProcess(pi.Process, 1)
-			log.Fatalf("Failed to resume thread: %s", err)
-		}
-
-		// Close the process and thread handles
-		windows.CloseHandle(pi.Process)
-		windows.CloseHandle(pi.Thread)
+func relaunchWithNTPrivileges(exePath string, token windows.Token) (uint32, windows.Handle, error) {
+	cmd := exec.Command(exePath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Token: syscall.Token(token),
+	}
+	err := cmd.Start()
+	if err != nil {
+		return 0, 0, err
 	}
 
-	runWithPrivileges(targetFunc)
+	// Get the process ID and process handle
+	processID := uint32(cmd.Process.Pid)
+	processHandle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, processID)
+	if err != nil {
+		return 0, 0, err
+	}
 
-	return nil
+	return processID, processHandle, nil
 }
+
 func isRunningAsSystem() (bool, error) {
 	// Get the current process token
 	var currentProcessToken windows.Token

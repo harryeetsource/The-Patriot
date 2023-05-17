@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -18,24 +17,6 @@ import (
 	. "github.com/lxn/walk/declarative"
 	"golang.org/x/sys/windows"
 )
-
-type SHELLEXECUTEINFO struct {
-	cbSize       uint32
-	fMask        uint32
-	hwnd         uintptr
-	lpVerb       *uint16
-	lpFile       *uint16
-	lpParameters *uint16
-	lpDirectory  *uint16
-	nShow        int32
-	hInstApp     uintptr
-	lpIDList     uintptr
-	lpClass      *uint16
-	hkeyClass    uintptr
-	dwHotKey     uint32
-	hIcon        uintptr
-	hProcess     uintptr
-}
 
 const (
 	PROCESS_ALL_ACCESS            = 0x1F0FFF
@@ -166,7 +147,6 @@ var (
 	modpsapi                         = windows.NewLazySystemDLL("psapi.dll")
 	modSecur32                       = syscall.NewLazyDLL("secur32.dll")
 	modAdvapi32                      = syscall.NewLazyDLL("advapi32.dll")
-	modSspiCli                       = syscall.NewLazyDLL("sspicli.dll")
 	procLsaRegisterLogonProcessW     = modSecur32.NewProc("LsaRegisterLogonProcess")
 	procLsaConnectUntrusted          = modSecur32.NewProc("LsaConnectUntrusted")
 	procLsaCallAuthenticationPackage = modSecur32.NewProc("LsaCallAuthenticationPackage")
@@ -334,72 +314,6 @@ func extractExecutables(inputPath, outputPath string) {
 		fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-func enablePrivilege(privilegeName string) error {
-	var token windows.Token
-	currentProcess, _ := windows.GetCurrentProcess()
-	err := windows.OpenProcessToken(currentProcess, windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token)
-
-	if err != nil {
-		return err
-	}
-	defer token.Close()
-
-	var luid windows.LUID
-	err = windows.LookupPrivilegeValue(nil, windows.StringToUTF16Ptr(privilegeName), &luid)
-	if err != nil {
-		return err
-	}
-
-	privileges := windows.Tokenprivileges{
-		PrivilegeCount: 1,
-		Privileges: [1]windows.LUIDAndAttributes{
-			{
-				Luid:       luid,
-				Attributes: windows.SE_PRIVILEGE_ENABLED,
-			},
-		},
-	}
-
-	err = windows.AdjustTokenPrivileges(token, false, &privileges, 0, nil, nil)
-
-	if err != nil && err != windows.ERROR_NOT_ALL_ASSIGNED {
-		return err
-	}
-
-	return nil
-}
-func runWithPrivileges(targetFunc func()) error {
-	// Enable the required privileges
-	privileges := []string{
-		SE_ASSIGNPRIMARYTOKEN_NAME,
-		SE_LOAD_DRIVER_NAME,
-		SE_SYSTEM_ENVIRONMENT_NAME,
-		SE_TAKE_OWNERSHIP_NAME,
-		SE_DEBUG_NAME,
-		SE_TCB_NAME,
-		SE_SHUTDOWN_PRIVILEGE,
-	}
-
-	for _, privilege := range privileges {
-		err := enablePrivilege(privilege)
-		if err != nil {
-			log.Fatalf("Failed to enable %s: %v", privilege, err)
-		}
-	}
-
-	// Run the provided function with the required privileges
-	targetFunc()
-
-	return nil
-}
-
 func setMemory(ptr unsafe.Pointer, value byte, size uintptr) {
 	bytes := make([]byte, size)
 	for i := range bytes {
@@ -465,36 +379,7 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 
 	return nil
 }
-func runAsAdmin(programPath string) error {
-	// Load shell32.dll library
-	shell32, err := syscall.LoadDLL("shell32.dll")
-	if err != nil {
-		return err
-	}
-	defer shell32.Release()
 
-	// Get the pointer to the ShellExecuteEx function
-	shellExecuteEx, err := shell32.FindProc("ShellExecuteExW")
-	if err != nil {
-		return err
-	}
-
-	// Prepare parameters for ShellExecuteEx function
-	sei := &SHELLEXECUTEINFO{
-		cbSize: uint32(unsafe.Sizeof(SHELLEXECUTEINFO{})),
-		lpVerb: syscall.StringToUTF16Ptr("runas"),
-		lpFile: syscall.StringToUTF16Ptr(programPath),
-		nShow:  syscall.SW_NORMAL,
-	}
-
-	// Call the ShellExecuteEx function to run the program as administrator
-	ret, _, err := shellExecuteEx.Call(uintptr(unsafe.Pointer(sei)))
-	if ret == 0 {
-		return err
-	}
-
-	return nil
-}
 func runMemoryDumper(folderName string, progressChannel chan float64, statusChannel chan string) (string, error) {
 	defer close(progressChannel)
 	defer close(statusChannel)
@@ -567,6 +452,21 @@ func updateStatus(status string) {
 		})
 	}
 }
+func isUserAnAdmin() (bool, error) {
+	shell32, err := syscall.LoadDLL("shell32.dll")
+	if err != nil {
+		return false, err
+	}
+	defer shell32.Release()
+
+	isUserAnAdmin, err := shell32.FindProc("IsUserAnAdmin")
+	if err != nil {
+		return false, err
+	}
+
+	ret, _, _ := isUserAnAdmin.Call()
+	return ret != 0, nil
+}
 func start(progressChannel chan<- float64, statusChannel chan string) {
 
 	isAdmin, err := isUserAnAdmin()
@@ -626,54 +526,6 @@ func start(progressChannel chan<- float64, statusChannel chan string) {
 	fmt.Println("Memory dumper output:")
 	fmt.Println(output)
 }
-
-const manifestFileName = "memdump.exe.manifest"
-const manifestContent = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="CompanyName.YourApplication" type="win32"/>
-  <dependency>
-    <dependentAssembly>
-      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
-    </dependentAssembly>
-  </dependency>
-  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
-    <security>
-      <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
-      </requestedPrivileges>
-    </security>
-  </trustInfo>
-</assembly>
-`
-
-func checkAndCreateManifestFile() (bool, error) {
-	_, err := os.Stat(manifestFileName)
-	if os.IsNotExist(err) {
-		err = ioutil.WriteFile(manifestFileName, []byte(manifestContent), 0644)
-		return true, err
-	}
-	return false, err
-}
-func createAndRunScheduledTask(taskName, taskXMLPath string) error {
-	cmd := exec.Command("schtasks.exe", "/Create", "/F", "/TN", taskName, "/XML", taskXMLPath)
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to create scheduled task: %s", err)
-	}
-
-	cmd = exec.Command("schtasks.exe", "/Run", "/TN", taskName)
-	err = cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to run scheduled task: %s", err)
-	}
-	cmd = exec.Command("schtasks.exe", "/Delete", "/F", "/TN", taskName)
-	err = cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to delete scheduled task: %s", err)
-	}
-
-	return nil
-}
 func createAndRunMainWindow() {
 	progressChannel := make(chan float64)
 	statusChannel := make(chan string)
@@ -724,54 +576,6 @@ func createAndRunMainWindow() {
 	// Close the channels
 	close(progressChannel)
 	close(statusChannel)
-}
-
-type TOKEN_USER struct {
-	User SID_AND_ATTRIBUTES
-}
-
-type SID_AND_ATTRIBUTES struct {
-	Sid        *windows.SID
-	Attributes uint32
-}
-
-func isRunningAsSystem() (bool, error) {
-	// Get the current process token
-	var currentProcessToken windows.Token
-	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &currentProcessToken)
-	if err != nil {
-		return false, fmt.Errorf("failed to open current process token: %s", err)
-	}
-	defer currentProcessToken.Close()
-
-	// Call GetTokenInformation with a nil buffer to get the required buffer size
-	var tokenUserSize uint32
-	err = windows.GetTokenInformation(currentProcessToken, windows.TokenUser, nil, 0, &tokenUserSize)
-	if err != windows.ERROR_INSUFFICIENT_BUFFER {
-		return false, fmt.Errorf("failed to get required buffer size: %s", err)
-	}
-
-	// Allocate the buffer with the correct size and call GetTokenInformation again
-	tokenUserBuffer := make([]byte, tokenUserSize)
-	err = windows.GetTokenInformation(currentProcessToken, windows.TokenUser, &tokenUserBuffer[0], tokenUserSize, &tokenUserSize)
-	if err != nil {
-		return false, fmt.Errorf("failed to get user token information of the current process token: %s", err)
-	}
-
-	// Cast the buffer to a TOKEN_USER pointer
-	tokenUser := (*TOKEN_USER)(unsafe.Pointer(&tokenUserBuffer[0]))
-	currentUserSID := tokenUser.User.Sid
-
-	// Create a well-known SID for the Local System account
-	systemSID, err := windows.StringToSid("S-1-5-18")
-	if err != nil {
-		return false, fmt.Errorf("failed to create system SID: %s", err)
-	}
-
-	// Compare the user SIDs of the current process token and the well-known System SID
-	isEqual := windows.EqualSid(currentUserSID, systemSID)
-
-	return isEqual, nil
 }
 
 func initialize() {
@@ -851,130 +655,6 @@ func initialize() {
 	// Only create the main window and run the application if the program is running with SYSTEM privileges
 	createAndRunMainWindow()
 }
-
-func relaunchWithNTPrivileges(programPath string, systemToken windows.Token) error {
-	targetFunc := func() {
-		var si windows.StartupInfo
-		var pi windows.ProcessInformation
-
-		// Duplicate the system token
-		var duplicatedToken windows.Token
-		err := windows.DuplicateTokenEx(
-			systemToken,
-			windows.TOKEN_ALL_ACCESS,
-			nil,
-			windows.SecurityImpersonation,
-			windows.TokenPrimary,
-			&duplicatedToken,
-		)
-		if err != nil {
-			log.Fatalf("Failed to duplicate the system token: %s", err)
-		}
-		defer duplicatedToken.Close()
-
-		// Create the process with the duplicated system token
-		err = windows.CreateProcessAsUser(
-			duplicatedToken,
-			syscall.StringToUTF16Ptr(programPath),
-			nil,
-			nil,
-			nil,
-			false,
-			windows.CREATE_SUSPENDED,
-			nil,
-			nil,
-			&si,
-			&pi,
-		)
-		if err != nil {
-			log.Fatalf("CreateProcessAsUser failed: %s", err)
-		}
-
-		// Resume the execution of the new process
-		_, err = windows.ResumeThread(pi.Thread)
-		if err != nil {
-			// Terminate the newly created process if resume fails
-			windows.TerminateProcess(pi.Process, 1)
-			log.Fatalf("Failed to resume thread: %s", err)
-		}
-
-		// Close the process and thread handles
-		windows.CloseHandle(pi.Process)
-		windows.CloseHandle(pi.Thread)
-	}
-
-	runWithPrivileges(targetFunc)
-
-	return nil
-}
-
-func getSystemToken() (syscall.Token, error) {
-	var systemToken syscall.Token
-
-	targetFunc := func() {
-		var (
-			luid       LUID
-			lsaHandle  syscall.Handle
-			lsaProcess syscall.Handle
-		)
-
-		// Register the logon process with the LSA
-		status, _, _ := procLsaRegisterLogonProcessW.Call(
-			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Memdump"))),
-			uintptr(unsafe.Pointer(&lsaHandle)),
-			uintptr(unsafe.Pointer(&luid)),
-		)
-		if status != 0 {
-			log.Fatalf("Failed to register logon process with LSA: %x", status)
-		}
-		defer syscall.CloseHandle(lsaHandle)
-
-		// Connect to the LSA untrusted
-		status, _, _ = procLsaConnectUntrusted.Call(uintptr(unsafe.Pointer(&lsaProcess)))
-		if status != 0 {
-			log.Fatalf("Failed to connect to LSA untrusted: %x", status)
-		}
-		defer syscall.CloseHandle(lsaProcess)
-
-		// Get the system token
-		tokenInformation := struct {
-			TokenType uint32
-			Token     syscall.Token
-		}{
-			TokenType: 2, // TokenPrimary
-		}
-		status, _, _ = procLsaCallAuthenticationPackage.Call(
-			uintptr(unsafe.Pointer(lsaHandle)),
-			0,
-			uintptr(unsafe.Pointer(&tokenInformation)),
-			uintptr(unsafe.Sizeof(tokenInformation)),
-			uintptr(unsafe.Pointer(&systemToken)),
-			0,
-		)
-		if status != 0 {
-			log.Fatalf("Failed to get system token: %x", status)
-		}
-	}
-
-	runWithPrivileges(targetFunc)
-	return systemToken, nil
-}
-
-func isUserAnAdmin() (bool, error) {
-	shell32, err := syscall.LoadDLL("shell32.dll")
-	if err != nil {
-		return false, err
-	}
-	defer shell32.Release()
-
-	isUserAnAdmin, err := shell32.FindProc("IsUserAnAdmin")
-	if err != nil {
-		return false, err
-	}
-
-	ret, _, _ := isUserAnAdmin.Call()
-	return ret != 0, nil
-}
 func main() {
-	runWithPrivileges(initialize)
+	initialize()
 }
