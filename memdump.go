@@ -897,50 +897,54 @@ func relaunchWithNTPrivileges(programPath string) error {
 }
 
 func getSystemToken() (syscall.Token, error) {
-	var (
-		luid        LUID
-		lsaHandle   syscall.Handle
-		lsaProcess  syscall.Handle
-		systemToken syscall.Token
-	)
+	var systemToken syscall.Token
 
-	// Register the logon process with the LSA
-	status, _, _ := procLsaRegisterLogonProcessW.Call(
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Memdump"))),
-		uintptr(unsafe.Pointer(&lsaHandle)),
-		uintptr(unsafe.Pointer(&luid)),
-	)
-	if status != 0 {
-		return 0, fmt.Errorf("failed to register logon process with LSA: %x", status)
-	}
-	defer syscall.CloseHandle(lsaHandle)
+	targetFunc := func() {
+		var (
+			luid       LUID
+			lsaHandle  syscall.Handle
+			lsaProcess syscall.Handle
+		)
 
-	// Connect to the LSA untrusted
-	status, _, _ = procLsaConnectUntrusted.Call(uintptr(unsafe.Pointer(&lsaProcess)))
-	if status != 0 {
-		return 0, fmt.Errorf("failed to connect to LSA untrusted: %x", status)
-	}
-	defer syscall.CloseHandle(lsaProcess)
+		// Register the logon process with the LSA
+		status, _, _ := procLsaRegisterLogonProcessW.Call(
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Memdump"))),
+			uintptr(unsafe.Pointer(&lsaHandle)),
+			uintptr(unsafe.Pointer(&luid)),
+		)
+		if status != 0 {
+			log.Fatalf("Failed to register logon process with LSA: %x", status)
+		}
+		defer syscall.CloseHandle(lsaHandle)
 
-	// Get the system token
-	tokenInformation := struct {
-		TokenType uint32
-		Token     syscall.Token
-	}{
-		TokenType: 2, // TokenPrimary
-	}
-	status, _, _ = procLsaCallAuthenticationPackage.Call(
-		uintptr(unsafe.Pointer(lsaHandle)),
-		0,
-		uintptr(unsafe.Pointer(&tokenInformation)),
-		uintptr(unsafe.Sizeof(tokenInformation)),
-		uintptr(unsafe.Pointer(&systemToken)),
-		0,
-	)
-	if status != 0 {
-		return 0, fmt.Errorf("failed to get system token: %x", status)
+		// Connect to the LSA untrusted
+		status, _, _ = procLsaConnectUntrusted.Call(uintptr(unsafe.Pointer(&lsaProcess)))
+		if status != 0 {
+			log.Fatalf("Failed to connect to LSA untrusted: %x", status)
+		}
+		defer syscall.CloseHandle(lsaProcess)
+
+		// Get the system token
+		tokenInformation := struct {
+			TokenType uint32
+			Token     syscall.Token
+		}{
+			TokenType: 2, // TokenPrimary
+		}
+		status, _, _ = procLsaCallAuthenticationPackage.Call(
+			uintptr(unsafe.Pointer(lsaHandle)),
+			0,
+			uintptr(unsafe.Pointer(&tokenInformation)),
+			uintptr(unsafe.Sizeof(tokenInformation)),
+			uintptr(unsafe.Pointer(&systemToken)),
+			0,
+		)
+		if status != 0 {
+			log.Fatalf("Failed to get system token: %x", status)
+		}
 	}
 
+	runWithPrivileges(targetFunc)
 	return systemToken, nil
 }
 
