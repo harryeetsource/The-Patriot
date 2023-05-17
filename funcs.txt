@@ -377,3 +377,5 @@ SeShutdownPrivilege
 SeChangeNotifyPrivilege
 SeTimeZonePrivilege
 SeTcbPrivilege
+SeUndockPrivilege
+SeIncreaseWorkingSetPrivilege
