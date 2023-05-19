@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image/color"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -20,8 +22,55 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
 	"golang.org/x/sys/windows"
 )
+
+type MZHeader struct {
+	Signature    uint16
+	LastPageSize uint16
+	Pages        uint16
+	Relocations  uint16
+	HeaderSize   uint16
+	MinAlloc     uint16
+	MaxAlloc     uint16
+	InitialSS    uint16
+	InitialSP    uint16
+	Checksum     uint16
+	InitialIP    uint16
+	InitialCS    uint16
+	RelocAddr    uint16
+	OverlayNum   uint16
+	Reserved     [8]uint16
+	OEMID        uint16
+	OEMInfo      uint16
+	Reserved2    [20]uint16
+	PEHeaderAddr uint32
+}
+
+type PEHeader struct {
+	Signature            uint32
+	Machine              uint16
+	NumberOfSections     uint16
+	TimeDateStamp        uint32
+	PointerToSymbolTable uint32
+	NumberOfSymbols      uint32
+	SizeOfOptionalHeader uint16
+	Characteristics      uint16
+}
+
+type PESectionHeader struct {
+	Name                 [8]byte
+	VirtualSize          uint32
+	VirtualAddress       uint32
+	SizeOfRawData        uint32
+	PointerToRawData     uint32
+	PointerToRelocations uint32
+	PointerToLinenumbers uint32
+	NumberOfRelocations  uint16
+	NumberOfLinenumbers  uint16
+	Characteristics      uint32
+}
 
 var myApp fyne.App
 var myWindow fyne.Window
@@ -33,6 +82,8 @@ const (
 	SE_LOAD_DRIVER_NAME        = "SeLoadDriverPrivilege"
 	SE_SYSTEM_ENVIRONMENT_NAME = "SeSystemEnvironmentPrivilege"
 	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
+	SE_DEBUG_NAME              = "SeDebugPrivilege"
+	SE_TCB_NAME                = "SeTcbPrivilege"
 )
 
 type MEMORY_BASIC_INFORMATION struct {
@@ -59,6 +110,103 @@ type ProcessEntry32 struct {
 type WMICApp struct {
 	Name string
 	GUID string
+}
+
+func findPEOffset(data []byte, pos int) int {
+	minPeOffset := 0x40
+	maxPeOffset := 0x200
+
+	for offset := minPeOffset; offset <= maxPeOffset; offset++ {
+		if pos+offset+4 > len(data) {
+			break
+		}
+		if bytes.Equal(data[pos+offset:pos+offset+4], []byte{0x50, 0x45, 0x00, 0x00}) {
+			return offset
+		}
+	}
+
+	return -1
+}
+
+func findMZHeaders(buffer []byte) []int {
+	dosMagic := []byte("MZ")
+	mzPositions := []int{}
+
+	for pos := 0; pos < len(buffer)-len(dosMagic); pos++ {
+		if bytes.Equal(buffer[pos:pos+len(dosMagic)], dosMagic) {
+			mzPositions = append(mzPositions, pos)
+		}
+	}
+
+	return mzPositions
+}
+
+func extractExecutables(inputPath, outputPath string) {
+	data, err := ioutil.ReadFile(inputPath)
+	if err != nil {
+		log.Fatalf("Failed to read input file: %v", err)
+	}
+
+	mzOffsets := findMZHeaders(data)
+
+	count := 0
+	headers := make(map[string]bool)
+
+	for _, pos := range mzOffsets {
+		peHeaderAddr := int(binary.LittleEndian.Uint32(data[pos+0x3C : pos+0x3C+4]))
+		peHeaderPos := pos + peHeaderAddr
+
+		if peHeaderAddr <= 0 || peHeaderPos >= len(data) || peHeaderPos+4 > len(data) {
+			continue
+		}
+
+		if bytes.Equal(data[peHeaderPos:peHeaderPos+4], []byte{0x50, 0x45, 0x00, 0x00}) {
+			peMachine := binary.LittleEndian.Uint16(data[peHeaderPos+4 : peHeaderPos+4+2])
+
+			if peMachine == 0x14c || peMachine == 0x8664 {
+				peSize := binary.LittleEndian.Uint32(data[peHeaderPos+0x50 : peHeaderPos+0x50+4])
+				fileAlignment := binary.LittleEndian.Uint32(data[peHeaderPos+0x3C : peHeaderPos+0x3C+4])
+
+				if peSize != 0 && peHeaderPos+int(peSize) <= len(data) && peSize <= 100000000 {
+					headerStr := string(data[peHeaderPos : peHeaderPos+min(1024, int(peSize))])
+
+					if _, found := headers[headerStr]; !found {
+						headers[headerStr] = true
+
+						padding := 0
+						if fileAlignment != 0 && int(peSize)%int(fileAlignment) != 0 {
+							padding = int(fileAlignment) - int(peSize)%int(fileAlignment)
+						}
+
+						extractedSize := int(peSize) + padding
+						if peHeaderPos+extractedSize <= len(data) {
+							filename := fmt.Sprintf("%s%d.exe", outputPath, count)
+							count++
+
+							err = ioutil.WriteFile(filename, data[pos:pos+extractedSize], 0644)
+                        if err != nil {
+                            log.Printf("Failed to write output file: %v", err)
+                        } else {
+                            fmt.Printf("Extracted file: %s\n", filename)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if count == 0 {
+		fmt.Println("No executables found in input file.")
+	} else {
+		fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func enablePrivilege(privilegeName string) error {
@@ -102,6 +250,8 @@ func runWithPrivileges(targetFunc func()) {
 		SE_LOAD_DRIVER_NAME,
 		SE_SYSTEM_ENVIRONMENT_NAME,
 		SE_TAKE_OWNERSHIP_NAME,
+		SE_DEBUG_NAME,
+		SE_TCB_NAME,
 	}
 
 	for _, privilege := range privileges {
@@ -321,8 +471,16 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 		log.Printf("Base address: %X, Region size: %X, Protection: %s\n", memRange.BaseAddress, memRange.RegionSize, protectionStr)
 	}
 
+	// Create a new directory for the extracted executables
+	extractedExecPath := filepath.Join(folderName, fmt.Sprintf("%s_%d_extracted", exePath, processID))
+	os.Mkdir(extractedExecPath, os.ModePerm)
+
+	// Call extractExecutables on the memory dump
+	extractExecutables(outputPath, extractedExecPath)
+
 	return nil
 }
+
 func execCommandWithPrompt(command string, args ...string) {
 	cmd := exec.Command(command, args...)
 	cmd.Stdin = os.Stdin
@@ -870,239 +1028,238 @@ type Theme interface {
 
 func runPatriot() {
 	// Your existing main function code goes here
-	runWithPrivileges(func() {
-		os.Setenv("FYNE_RENDER", "software")
-		myApp := app.New()
-		myApp.Settings().SetTheme(theme.DarkTheme())
-		myWindow := myApp.NewWindow("The Patriot")
-		progressBar := widget.NewProgressBar()
-		numCommands := 18
-		progressBar.Max = float64(numCommands)
+	os.Setenv("FYNE_RENDER", "software")
+	myApp := app.New()
+	myApp.Settings().SetTheme(theme.DarkTheme())
+	myWindow := myApp.NewWindow("The Patriot")
+	progressBar := widget.NewProgressBar()
+	numCommands := 18
+	progressBar.Max = float64(numCommands)
 
-		logOutput := widget.NewEntry()
-		logOutput.MultiLine = true
-		logOutput.Disable()
+	logOutput := widget.NewEntry()
+	logOutput.MultiLine = true
+	logOutput.Disable()
 
-		driverPackages, _, _ := getDriverPackages(logOutput)
-		logOutputContainer := container.NewScroll(logOutput)
-		storeApps, _ := getWindowsStoreApps(logOutput)
-		// System cleanup button
-		cleanupButton := widget.NewButton("Perform System Cleanup", func() {
-			progressBar.SetValue(0)
-			progressBar.Show()
-			progressChan := make(chan float64)
-			doneChan := make(chan bool)
-			go func() {
-				for progress := range progressChan {
-					currentProgress := progressBar.Value
-					progressBar.SetValue(currentProgress + progress)
+	driverPackages, _, _ := getDriverPackages(logOutput)
+	logOutputContainer := container.NewScroll(logOutput)
+	storeApps, _ := getWindowsStoreApps(logOutput)
+	// System cleanup button
+	cleanupButton := widget.NewButton("Perform System Cleanup", func() {
+		progressBar.SetValue(0)
+		progressBar.Show()
+		progressChan := make(chan float64)
+		doneChan := make(chan bool)
+		go func() {
+			for progress := range progressChan {
+				currentProgress := progressBar.Value
+				progressBar.SetValue(currentProgress + progress)
+			}
+		}()
+
+		go performSystemCleanup(progressChan, doneChan, progressBar, logOutput)
+		go func() {
+			<-doneChan
+			progressBar.Hide()
+			fmt.Println("System cleanup completed.")
+			close(progressChan)
+		}()
+	})
+	progressBar.Hide()
+	cleanupTab := container.NewVBox(
+		cleanupButton,
+		widget.NewLabel("Click the button to perform system cleanup."),
+		progressBar,
+	)
+	cleanupTab.Resize(fyne.NewSize(800, 600)) // set a fixed size for the cleanupTab container
+
+	// List of Windows Store Apps
+	storeAppList := widget.NewList(
+		func() int {
+			return len(storeApps)
+		},
+		func() fyne.CanvasObject {
+			return widget.NewLabel("Template")
+		},
+		func(index widget.ListItemID, item fyne.CanvasObject) {
+			item.(*widget.Label).SetText(storeApps[index])
+		},
+	)
+	storeAppList.OnSelected = func(id widget.ListItemID) {
+		// Split the selected app's string into its components
+		appInfo := strings.Split(storeApps[id], ",")
+		appName := appInfo[0]
+		appFullName := appInfo[1]
+
+		// Validate the appFullName before running the command
+		if len(appFullName) == 0 || !strings.Contains(appFullName, "_") {
+			logOutput.SetText(logOutput.Text + "Invalid PackageFullName: " + appFullName + "\n")
+			return
+		}
+
+		// Construct the PowerShell command with the app full name
+		command := "Get-AppxPackage -AllUsers | Where-Object {$_.PackageFullName -eq '" + appFullName + "'} | Remove-AppxPackage"
+		logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appName + "\n")
+
+		// Run the command and display the output
+		_, err := execCommand(logOutput, "powershell", "-command", command)
+		if err != nil {
+			logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
+		} else {
+			logOutput.SetText(logOutput.Text + "Uninstalled Windows Store app: " + appName + "\n")
+		}
+		storeApps, _ = getWindowsStoreApps(logOutput)
+		storeAppList.Refresh()
+	}
+
+	// List of Driver Packages
+	driverPackageList := widget.NewList(
+		func() int {
+			return len(driverPackages)
+		},
+		func() fyne.CanvasObject {
+			return container.NewVBox(
+				container.NewHBox(
+					widget.NewLabel("Driver Display Name: "),
+					widget.NewLabel("Template"),
+				),
+				container.NewHBox(
+					widget.NewLabel("Driver Name: "),
+					widget.NewLabel("Template"),
+				),
+				container.NewHBox(
+					widget.NewLabel("Published Name: "),
+					widget.NewLabel("Template"),
+				),
+				container.NewHBox(
+					widget.NewLabel("Driver Version: "),
+					widget.NewLabel("Template"),
+				),
+			)
+		},
+		func(index widget.ListItemID, item fyne.CanvasObject) {
+			vbox := item.(*fyne.Container)
+			driverDisplayNameLabel := vbox.Objects[0].(*fyne.Container).Objects[1].(*widget.Label)
+			driverNameLabel := vbox.Objects[1].(*fyne.Container).Objects[1].(*widget.Label)
+			publishedNameLabel := vbox.Objects[2].(*fyne.Container).Objects[1].(*widget.Label)
+			driverVersionLabel := vbox.Objects[3].(*fyne.Container).Objects[1].(*widget.Label)
+
+			driverDisplayNameLabel.SetText(driverPackages[index].DriverDisplayName)
+			driverNameLabel.SetText(driverPackages[index].DriverName)
+			publishedNameLabel.SetText(driverPackages[index].PublishedName)
+			driverVersionLabel.SetText(driverPackages[index].DriverVersion)
+		},
+	)
+
+	driverPackageList.OnSelected = func(id widget.ListItemID) {
+		driverPackageName := driverPackages[id].PublishedName
+		logOutput.SetText(logOutput.Text + "Deleting driver package: " + driverPackageName + "\n")
+
+		// Use execCommandWithPrompt to request administrative privileges
+		execCommandWithPrompt("pnputil.exe", "/d", driverPackageName)
+
+		driverPackages, _, _ = getDriverPackages(logOutput)
+		driverPackageList.Refresh()
+	}
+
+	// List of WMIC Apps
+	wmicApps, _ := getWMICApps(logOutput)
+	wmicAppList := widget.NewList(
+		func() int {
+			return len(wmicApps)
+		},
+		func() fyne.CanvasObject {
+			return widget.NewLabel("Template")
+		},
+		func(index widget.ListItemID, item fyne.CanvasObject) {
+			item.(*widget.Label).SetText(wmicApps[index].Name + " (" + wmicApps[index].GUID + ")")
+		},
+	)
+
+	wmicAppList.OnSelected = func(id widget.ListItemID) {
+		appId := wmicApps[id].GUID
+		appName := wmicApps[id].Name
+		command := "wmic"
+		args := []string{"product", "where", "Caption='" + appName + "'", "call", "uninstall"}
+
+		logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appName + " (" + appId + ")\n")
+
+		execCommandWithPrompt(command, args...)
+
+		wmicAppList.Refresh()
+	}
+
+	// Create a new progress bar for the memory dump tab
+	dumpProgress := widget.NewProgressBar()
+	dumpProgress.Resize(fyne.NewSize(400, 10))
+	outputLabel := widget.NewLabel("")
+	scrollContainer := container.NewScroll(outputLabel)
+	// Create a new button for the memory dump tab
+	dumpButton := widget.NewButton("Dump Memory", func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Enter folder name")
+
+		confirm := func(response bool) {
+			if response {
+				folderName := entry.Text
+				if folderName != "" {
+					err := os.MkdirAll(folderName, 0755)
+					if err != nil {
+						logOutput.SetText(fmt.Sprintf("Error creating folder: %v", err))
+						return
+					}
 				}
-			}()
 
-			go performSystemCleanup(progressChan, doneChan, progressBar, logOutput)
-			go func() {
-				<-doneChan
-				progressBar.Hide()
-				fmt.Println("System cleanup completed.")
-				close(progressChan)
-			}()
-		})
-		progressBar.Hide()
-		cleanupTab := container.NewVBox(
-			cleanupButton,
-			widget.NewLabel("Click the button to perform system cleanup."),
-			progressBar,
-		)
-		cleanupTab.Resize(fyne.NewSize(800, 600)) // set a fixed size for the cleanupTab container
+				progressChannel := make(chan float64)
+				statusChannel := make(chan string)
 
-		// List of Windows Store Apps
-		storeAppList := widget.NewList(
-			func() int {
-				return len(storeApps)
-			},
-			func() fyne.CanvasObject {
-				return widget.NewLabel("Template")
-			},
-			func(index widget.ListItemID, item fyne.CanvasObject) {
-				item.(*widget.Label).SetText(storeApps[index])
-			},
-		)
-		storeAppList.OnSelected = func(id widget.ListItemID) {
-			// Split the selected app's string into its components
-			appInfo := strings.Split(storeApps[id], ",")
-			appName := appInfo[0]
-			appFullName := appInfo[1]
+				go func() {
+					output, err := runMemoryDumper(folderName, progressChannel, statusChannel)
+					if err != nil {
+						logOutput.SetText(fmt.Sprintf("Error: %v", err))
+					} else {
+						logOutput.SetText(output)
+					}
+				}()
 
-			// Validate the appFullName before running the command
-			if len(appFullName) == 0 || !strings.Contains(appFullName, "_") {
-				logOutput.SetText(logOutput.Text + "Invalid PackageFullName: " + appFullName + "\n")
-				return
-			}
-
-			// Construct the PowerShell command with the app full name
-			command := "Get-AppxPackage -AllUsers | Where-Object {$_.PackageFullName -eq '" + appFullName + "'} | Remove-AppxPackage"
-			logOutput.SetText(logOutput.Text + "Uninstalling Windows Store app: " + appName + "\n")
-
-			// Run the command and display the output
-			_, err := execCommand(logOutput, "powershell", "-command", command)
-			if err != nil {
-				logOutput.SetText(logOutput.Text + "Error: " + err.Error() + "\n")
-			} else {
-				logOutput.SetText(logOutput.Text + "Uninstalled Windows Store app: " + appName + "\n")
-			}
-			storeApps, _ = getWindowsStoreApps(logOutput)
-			storeAppList.Refresh()
-		}
-
-		// List of Driver Packages
-		driverPackageList := widget.NewList(
-			func() int {
-				return len(driverPackages)
-			},
-			func() fyne.CanvasObject {
-				return container.NewVBox(
-					container.NewHBox(
-						widget.NewLabel("Driver Display Name: "),
-						widget.NewLabel("Template"),
-					),
-					container.NewHBox(
-						widget.NewLabel("Driver Name: "),
-						widget.NewLabel("Template"),
-					),
-					container.NewHBox(
-						widget.NewLabel("Published Name: "),
-						widget.NewLabel("Template"),
-					),
-					container.NewHBox(
-						widget.NewLabel("Driver Version: "),
-						widget.NewLabel("Template"),
-					),
-				)
-			},
-			func(index widget.ListItemID, item fyne.CanvasObject) {
-				vbox := item.(*fyne.Container)
-				driverDisplayNameLabel := vbox.Objects[0].(*fyne.Container).Objects[1].(*widget.Label)
-				driverNameLabel := vbox.Objects[1].(*fyne.Container).Objects[1].(*widget.Label)
-				publishedNameLabel := vbox.Objects[2].(*fyne.Container).Objects[1].(*widget.Label)
-				driverVersionLabel := vbox.Objects[3].(*fyne.Container).Objects[1].(*widget.Label)
-
-				driverDisplayNameLabel.SetText(driverPackages[index].DriverDisplayName)
-				driverNameLabel.SetText(driverPackages[index].DriverName)
-				publishedNameLabel.SetText(driverPackages[index].PublishedName)
-				driverVersionLabel.SetText(driverPackages[index].DriverVersion)
-			},
-		)
-
-		driverPackageList.OnSelected = func(id widget.ListItemID) {
-			driverPackageName := driverPackages[id].PublishedName
-			logOutput.SetText(logOutput.Text + "Deleting driver package: " + driverPackageName + "\n")
-
-			// Use execCommandWithPrompt to request administrative privileges
-			execCommandWithPrompt("pnputil.exe", "/d", driverPackageName)
-
-			driverPackages, _, _ = getDriverPackages(logOutput)
-			driverPackageList.Refresh()
-		}
-
-		// List of WMIC Apps
-		wmicApps, _ := getWMICApps(logOutput)
-		wmicAppList := widget.NewList(
-			func() int {
-				return len(wmicApps)
-			},
-			func() fyne.CanvasObject {
-				return widget.NewLabel("Template")
-			},
-			func(index widget.ListItemID, item fyne.CanvasObject) {
-				item.(*widget.Label).SetText(wmicApps[index].Name + " (" + wmicApps[index].GUID + ")")
-			},
-		)
-
-		wmicAppList.OnSelected = func(id widget.ListItemID) {
-			appId := wmicApps[id].GUID
-			appName := wmicApps[id].Name
-			command := "wmic"
-			args := []string{"product", "where", "Caption='" + appName + "'", "call", "uninstall"}
-
-			logOutput.SetText(logOutput.Text + "Uninstalling WMIC app: " + appName + " (" + appId + ")\n")
-
-			execCommandWithPrompt(command, args...)
-
-			wmicAppList.Refresh()
-		}
-
-		// Create a new progress bar for the memory dump tab
-		dumpProgress := widget.NewProgressBar()
-		dumpProgress.Resize(fyne.NewSize(400, 10))
-		outputLabel := widget.NewLabel("")
-		scrollContainer := container.NewScroll(outputLabel)
-		// Create a new button for the memory dump tab
-		dumpButton := widget.NewButton("Dump Memory", func() {
-			entry := widget.NewEntry()
-			entry.SetPlaceHolder("Enter folder name")
-
-			confirm := func(response bool) {
-				if response {
-					folderName := entry.Text
-					if folderName != "" {
-						err := os.MkdirAll(folderName, 0755)
-						if err != nil {
-							logOutput.SetText(fmt.Sprintf("Error creating folder: %v", err))
-							return
+				go func() {
+					for {
+						select {
+						case progressValue := <-progressChannel:
+							progressBar.SetValue(progressValue)
+						case status := <-statusChannel:
+							// Append the status update to the logOutput
+							existingText := logOutput.Text
+							logOutput.SetText(existingText + status)
 						}
 					}
+				}()
 
-					progressChannel := make(chan float64)
-					statusChannel := make(chan string)
-
-					go func() {
-						output, err := runMemoryDumper(folderName, progressChannel, statusChannel)
-						if err != nil {
-							logOutput.SetText(fmt.Sprintf("Error: %v", err))
-						} else {
-							logOutput.SetText(output)
-						}
-					}()
-
-					go func() {
-						for {
-							select {
-							case progressValue := <-progressChannel:
-								progressBar.SetValue(progressValue)
-							case status := <-statusChannel:
-								// Append the status update to the logOutput
-								existingText := logOutput.Text
-								logOutput.SetText(existingText + status)
-							}
-						}
-					}()
-
-				}
 			}
+		}
 
-			dialog.ShowCustomConfirm("Create Folder", "Create", "Cancel", entry, confirm, myWindow)
-		})
-
-		dumpTab := container.NewVBox(
-			dumpButton,
-			widget.NewLabel("Click the button to dump memory."),
-			progressBar,
-			scrollContainer,
-		)
-		logTab := container.NewTabItem("Log Output", logOutputContainer)
-		tabs := container.NewAppTabs(
-			container.NewTabItem("Windows Store Apps", storeAppList),
-			container.NewTabItem("Driver Packages", driverPackageList),
-			container.NewTabItem("WMIC Apps", wmicAppList),
-			container.NewTabItem("System Cleanup", cleanupTab),
-			logTab,
-		)
-		tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
-		myWindow.SetContent(tabs)
-		myWindow.Resize(fyne.NewSize(800, 600))
-		myWindow.ShowAndRun()
+		dialog.ShowCustomConfirm("Create Folder", "Create", "Cancel", entry, confirm, myWindow)
 	})
+
+	dumpTab := container.NewVBox(
+		dumpButton,
+		widget.NewLabel("Click the button to dump memory."),
+		progressBar,
+		scrollContainer,
+	)
+	logTab := container.NewTabItem("Log Output", logOutputContainer)
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Windows Store Apps", storeAppList),
+		container.NewTabItem("Driver Packages", driverPackageList),
+		container.NewTabItem("WMIC Apps", wmicAppList),
+		container.NewTabItem("System Cleanup", cleanupTab),
+		logTab,
+	)
+	tabs.Append(container.NewTabItem("Memory Dump", dumpTab))
+	myWindow.SetContent(tabs)
+	myWindow.Resize(fyne.NewSize(800, 600))
+	myWindow.ShowAndRun()
 }
+
 func main() {
 	runPatriot()
 }

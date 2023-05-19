@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"unsafe"
 
 	"github.com/kardianos/service"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -21,6 +20,21 @@ const (
 	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
 	SE_DEBUG_NAME              = "SeDebugPrivilege"
 	SE_TCB_NAME                = "SeTcbPrivilege"
+	SE_INCREASE_QUOTA_NAME     = "SeIncreaseQuotaPrivilege"
+	SE_SECURITY_NAME           = "SeSecurityPrivilege"
+	SE_SYSTEMTIME_NAME         = "SeSystemtimePrivilege"
+	SE_BACKUP_NAME             = "SeBackupPrivilege"
+	SE_RESTORE_NAME            = "SeRestorePrivilege"
+	SE_SHUTDOWN_NAME           = "SeShutdownPrivilege"
+	SE_UNDOCK_NAME             = "SeUndockPrivilege"
+	SE_MANAGE_VOLUME_NAME      = "SeManageVolumePrivilege"
+
+	LOGON32_PROVIDER_DEFAULT      = 0
+	LOGON32_LOGON_INTERACTIVE     = 2
+	CREATE_UNICODE_ENVIRONMENT    = 0x00000400
+	FORMAT_MESSAGE_FROM_SYSTEM    = 0x00001000
+	FORMAT_MESSAGE_ARGUMENT_ARRAY = 0x00002000
+	FORMAT_MESSAGE_IGNORE_INSERTS = 0x00000200
 )
 
 type patriotService struct {
@@ -50,6 +64,14 @@ func runWithPrivileges(targetFunc func()) {
 		SE_TAKE_OWNERSHIP_NAME,
 		SE_DEBUG_NAME,
 		SE_TCB_NAME,
+		SE_INCREASE_QUOTA_NAME,
+		SE_SECURITY_NAME,
+		SE_SYSTEMTIME_NAME,
+		SE_BACKUP_NAME,
+		SE_RESTORE_NAME,
+		SE_SHUTDOWN_NAME,
+		SE_UNDOCK_NAME,
+		SE_MANAGE_VOLUME_NAME,
 	}
 
 	for _, privilege := range privileges {
@@ -111,25 +133,45 @@ func startGUI() {
 		log.Fatalf("Failed to get executable path: %v", err)
 	}
 
-	// Print the path of the running executable
-	fmt.Println("Executable path:", runningPath)
-
-	// Print the current working directory
-	wd, _ := os.Getwd()
-	fmt.Println("Working directory:", wd)
-
 	// Get the directory containing the executable
 	exeDir := filepath.Dir(runningPath)
 
 	// Construct the path to patriot-gui.exe
 	patriotGUIPath := filepath.Join(exeDir, "patriot-gui.exe")
-	// Print the path to patriot-gui.exe
-	fmt.Println("Patriot-GUI path:", patriotGUIPath)
-	// Run patriot-gui.exe
-	cmd := exec.Command(patriotGUIPath)
-	err = cmd.Run()
+
+	// Get current process token
+	var currentProcessToken windows.Token
+	currentProcess, _ := windows.GetCurrentProcess()
+	err = windows.OpenProcessToken(currentProcess, windows.TOKEN_DUPLICATE, &currentProcessToken)
 	if err != nil {
-		log.Printf("Failed to start GUI: %v", err)
+		log.Fatalf("Failed to get current process token: %v", err)
+	}
+
+	// Duplicate the current process token with TOKEN_ALL_ACCESS to create a primary token
+	var duplicatedToken windows.Token
+	err = windows.DuplicateTokenEx(currentProcessToken, windows.TOKEN_ALL_ACCESS, nil, windows.SecurityIdentification, windows.TokenPrimary, &duplicatedToken)
+	if err != nil {
+		log.Fatalf("Failed to duplicate token: %v", err)
+	}
+
+	// Get the user environment block
+	var envBlock *uint16
+	err = windows.CreateEnvironmentBlock(&envBlock, duplicatedToken, false)
+	if err != nil {
+		log.Fatalf("Failed to create environment block: %v", err)
+	}
+
+	// Define the process startup information
+	si := new(windows.StartupInfo)
+	si.Cb = uint32(unsafe.Sizeof(*si))
+	si.Flags = windows.STARTF_USESHOWWINDOW
+	si.ShowWindow = windows.SW_SHOWDEFAULT
+
+	// Create the process
+	pi := new(windows.ProcessInformation)
+	err = windows.CreateProcessAsUser(duplicatedToken, windows.StringToUTF16Ptr(patriotGUIPath), nil, nil, nil, false, CREATE_UNICODE_ENVIRONMENT, envBlock, nil, si, pi)
+	if err != nil {
+		log.Fatalf("Failed to create process: %v", err)
 	}
 }
 
