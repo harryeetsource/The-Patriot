@@ -819,11 +819,10 @@ type CustomTheme struct {
 	originalTheme fyne.Theme
 }
 
-func (c CustomTheme) ForegroundColor() color.Color {
-	return color.White
-}
-
 func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if name == theme.ColorNameForeground || name == theme.ColorNameDisabled {
+		return color.RGBA{0, 255, 0, 255} // Green color
+	}
 	return c.originalTheme.Color(name, variant)
 }
 
