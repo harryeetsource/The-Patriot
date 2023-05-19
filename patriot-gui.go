@@ -3,10 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"image/color"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -37,52 +35,6 @@ const (
 	SE_TAKE_OWNERSHIP_NAME     = "SeTakeOwnershipPrivilege"
 )
 
-type MZHeader struct {
-	Signature    uint16
-	LastPageSize uint16
-	Pages        uint16
-	Relocations  uint16
-	HeaderSize   uint16
-	MinAlloc     uint16
-	MaxAlloc     uint16
-	InitialSS    uint16
-	InitialSP    uint16
-	Checksum     uint16
-	InitialIP    uint16
-	InitialCS    uint16
-	RelocAddr    uint16
-	OverlayNum   uint16
-	Reserved     [8]uint16
-	OEMID        uint16
-	OEMInfo      uint16
-	Reserved2    [20]uint16
-	PEHeaderAddr uint32
-}
-
-type PEHeader struct {
-	Signature            uint32
-	Machine              uint16
-	NumberOfSections     uint16
-	TimeDateStamp        uint32
-	PointerToSymbolTable uint32
-	NumberOfSymbols      uint32
-	SizeOfOptionalHeader uint16
-	Characteristics      uint16
-}
-
-type PESectionHeader struct {
-	Name                 [8]byte
-	VirtualSize          uint32
-	VirtualAddress       uint32
-	SizeOfRawData        uint32
-	PointerToRawData     uint32
-	PointerToRelocations uint32
-	PointerToLinenumbers uint32
-	NumberOfRelocations  uint16
-	NumberOfLinenumbers  uint16
-	Characteristics      uint32
-}
-
 type MEMORY_BASIC_INFORMATION struct {
 	BaseAddress       uintptr
 	AllocationBase    uintptr
@@ -109,112 +61,6 @@ type WMICApp struct {
 	GUID string
 }
 
-func findPEOffset(data []byte, pos int) int {
-	minPeOffset := 0x40
-	maxPeOffset := 0x200
-
-	for offset := minPeOffset; offset <= maxPeOffset; offset++ {
-		if pos+offset+4 > len(data) {
-			break
-		}
-		if bytes.Equal(data[pos+offset:pos+offset+4], []byte{0x50, 0x45, 0x00, 0x00}) {
-			return offset
-		}
-	}
-
-	return -1
-}
-
-func findMZHeaders(buffer []byte) []int {
-	dosMagic := []byte("MZ")
-	mzPositions := []int{}
-
-	for pos := 0; pos < len(buffer)-len(dosMagic); pos++ {
-		if bytes.Equal(buffer[pos:pos+len(dosMagic)], dosMagic) {
-			mzPositions = append(mzPositions, pos)
-		}
-	}
-
-	return mzPositions
-}
-
-func extractExecutables(inputPath, outputPath string) {
-	data, err := ioutil.ReadFile(inputPath)
-	if err != nil {
-		log.Fatalf("Failed to read input file: %v", err)
-	}
-	// Create a new folder based on the dump file name
-	dumpFileName := filepath.Base(inputPath)
-	dumpFileNameWithoutExt := strings.TrimSuffix(dumpFileName, filepath.Ext(dumpFileName))
-	outputPath = filepath.Join(outputPath, dumpFileNameWithoutExt)
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		err := os.Mkdir(outputPath, 0755)
-		if err != nil {
-			log.Fatalf("Failed to create output directory: %v", err)
-		}
-	}
-	mzOffsets := findMZHeaders(data)
-
-	count := 0
-	headers := make(map[string]bool)
-
-	for _, pos := range mzOffsets {
-		peHeaderAddr := int(binary.LittleEndian.Uint32(data[pos+0x3C : pos+0x3C+4]))
-		peHeaderPos := pos + peHeaderAddr
-
-		if peHeaderAddr <= 0 || peHeaderPos >= len(data) || peHeaderPos+4 > len(data) {
-			continue
-		}
-
-		if bytes.Equal(data[peHeaderPos:peHeaderPos+4], []byte{0x50, 0x45, 0x00, 0x00}) {
-			peMachine := binary.LittleEndian.Uint16(data[peHeaderPos+4 : peHeaderPos+4+2])
-
-			if peMachine == 0x14c || peMachine == 0x8664 {
-				peSize := binary.LittleEndian.Uint32(data[peHeaderPos+0x50 : peHeaderPos+0x50+4])
-				fileAlignment := binary.LittleEndian.Uint32(data[peHeaderPos+0x3C : peHeaderPos+0x3C+4])
-
-				if peSize != 0 && peHeaderPos+int(peSize) <= len(data) && peSize <= 100000000 {
-					headerStr := string(data[peHeaderPos : peHeaderPos+min(1024, int(peSize))])
-
-					if _, found := headers[headerStr]; !found {
-						headers[headerStr] = true
-
-						padding := 0
-						if int(peSize)%int(fileAlignment) != 0 {
-							padding = int(fileAlignment) - int(peSize)%int(fileAlignment)
-						}
-
-						extractedSize := int(peSize) + padding
-						if peHeaderPos+extractedSize <= len(data) {
-							filename := filepath.Join(outputPath, fmt.Sprintf("%s%d.exe", dumpFileNameWithoutExt, count))
-							count++
-
-							err = ioutil.WriteFile(filename, data[pos:pos+extractedSize], 0644)
-							if err != nil {
-								log.Printf("Failed to write output file: %v", err)
-							} else {
-								fmt.Printf("Extracted file: %s\n", filename)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if count == 0 {
-		fmt.Println("No executables found in input file.")
-	} else {
-		fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 func enablePrivilege(privilegeName string) error {
 	var token windows.Token
 	currentProcess, _ := windows.GetCurrentProcess()
@@ -470,7 +316,6 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 
 	log.Printf("Memory dump for PID %d saved to: %s\n", processID, outputPath)
 	log.Printf("Memory ranges for PID %d:\n", processID)
-	extractExecutables(outputPath, folderName)
 	for _, memRange := range memoryRanges {
 		protectionStr := protectionFlagsToString(memRange.Protect)
 		log.Printf("Base address: %X, Region size: %X, Protection: %s\n", memRange.BaseAddress, memRange.RegionSize, protectionStr)
@@ -896,31 +741,31 @@ func performSystemCleanup(progressChan chan float64, doneChan chan bool, progres
 	}
 	fmt.Println("Checking for and installing Windows updates.")
 	progressChan <- stepProgress
-	output, err = execCommand(logOutput, "powershell", "-ep", "bypass", "-command", "Install-Module -Name PackageProvider -Force -Confirm:$false")
+	output, err = execCommand(logOutput, "powershell", "-ep", "bypass", "-command", "Install-Module -Name PackageProvider -Force")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
-	output, err = execCommand(logOutput, "powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false")
-	if err == nil {
-		logOutput.SetText(logOutput.Text + output)
-	}
-
-	output, err = execCommand(logOutput, "powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-Module -Name PowerShellGet -Scope CurrentUser -Force -AllowClobber -Confirm:$false")
+	output, err = execCommandWithUserInput("powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
 
-	output, err = execCommand(logOutput, "powershell", "-ExecutionPolicy", "Bypass", "-command", "Register-PackageSource -Trusted -ProviderName 'PowerShellGet' -Name 'PSGallery' -Location 'https://www.powershellgallery.com/api/v2' -Confirm:$false")
+	output, err = execCommandWithUserInput("powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-Module -Name PowerShellGet -Scope CurrentUser -Force -AllowClobber")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
 
-	output, err = execCommand(logOutput, "powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-Package -Name PSWindowsUpdate -ProviderName PowerShellGet -Force -Confirm:$false")
+	output, err = execCommandWithUserInput("powershell", "-ExecutionPolicy", "Bypass", "-command", "Register-PackageSource -Trusted -ProviderName 'PowerShellGet' -Name 'PSGallery' -Location 'https://www.powershellgallery.com/api/v2'")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
 
-	output, err = execCommand(logOutput, "powershell", "-ExecutionPolicy", "Bypass", "-command", "Import-Module PowerShellGet; Import-Module PSWindowsUpdate; Install-Module PSWindowsUpdate -Force; Get-WindowsUpdate -Install -Confirm:$false")
+	output, err = execCommandWithUserInput("powershell", "-ExecutionPolicy", "Bypass", "-command", "Install-Package -Name PSWindowsUpdate -ProviderName PowerShellGet -Force")
+	if err == nil {
+		logOutput.SetText(logOutput.Text + output)
+	}
+
+	output, err = execCommandWithUserInput("powershell", "-ExecutionPolicy", "Bypass", "-command", "Import-Module PowerShellGet; Import-Module PSWindowsUpdate; Install-Module PSWindowsUpdate -Force; Get-WindowsUpdate -Install")
 	if err == nil {
 		logOutput.SetText(logOutput.Text + output)
 	}
@@ -974,10 +819,11 @@ type CustomTheme struct {
 	originalTheme fyne.Theme
 }
 
+func (c CustomTheme) ForegroundColor() color.Color {
+	return color.White
+}
+
 func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	if name == theme.ColorNameForeground || name == theme.ColorNameDisabled {
-		return color.RGBA{0, 255, 0, 255} // Green color
-	}
 	return c.originalTheme.Color(name, variant)
 }
 
@@ -1026,8 +872,9 @@ type Theme interface {
 func runPatriot() {
 	// Your existing main function code goes here
 	runWithPrivileges(func() {
+		os.Setenv("FYNE_RENDER", "software")
 		myApp := app.New()
-		myApp.Settings().SetTheme(newCustomTheme(theme.DarkTheme()))
+		myApp.Settings().SetTheme(theme.DarkTheme())
 		myWindow := myApp.NewWindow("The Patriot")
 		progressBar := widget.NewProgressBar()
 		numCommands := 18
