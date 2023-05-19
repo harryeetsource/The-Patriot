@@ -38,7 +38,8 @@ const (
 )
 
 type patriotService struct {
-	Service service.Service
+	Service      service.Service
+	guiProcessId int
 }
 
 func (s *patriotService) Start(service.Service) error {
@@ -48,14 +49,27 @@ func (s *patriotService) Start(service.Service) error {
 
 func (s *patriotService) Stop(service.Service) error {
 	// Here, you can add any cleanup code or stop any long-running operations
+	if s.guiProcessId != 0 {
+		// Open the process
+		processHandle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(s.guiProcessId))
+		if err != nil {
+			log.Printf("Failed to open process: %v", err)
+			return err
+		}
+		// Terminate the process
+		err = windows.TerminateProcess(processHandle, 0)
+		if err != nil {
+			log.Printf("Failed to terminate process: %v", err)
+			return err
+		}
+	}
 	return nil
 }
-
 func (s *patriotService) run() {
-	// Call your existing runPatriot function here
-	runPatriot()
+	s.runPatriot()
 }
-func runWithPrivileges(targetFunc func()) {
+
+func runWithPrivileges(targetFunc func() (uint32, error)) {
 	// Enable the required privileges
 	privileges := []string{
 		SE_ASSIGNPRIMARYTOKEN_NAME,
@@ -82,8 +96,9 @@ func runWithPrivileges(targetFunc func()) {
 	}
 
 	// Run the provided function with the required privileges
-	targetFunc()
+	_, _ = targetFunc()
 }
+
 func enablePrivilege(privilegeName string) error {
 	var token windows.Token
 	currentProcess, _ := windows.GetCurrentProcess()
@@ -118,15 +133,20 @@ func enablePrivilege(privilegeName string) error {
 
 	return nil
 }
-func runPatriot() {
+func (s *patriotService) runPatriot() {
 	fmt.Println("Ensuring adequate privileges")
 	fmt.Println("(-)Booting up the Patriot... please wait X) -- Coded By Harrison Edwards")
-	runWithPrivileges(func() {
-		startGUI()
+	runWithPrivileges(func() (uint32, error) {
+		pid, err := s.startGUI()
+		if err != nil {
+			log.Fatalf("Failed to start GUI: %v", err)
+		}
+		s.guiProcessId = int(pid)
+		return pid, err
 	})
 }
 
-func startGUI() {
+func (s *patriotService) startGUI() (uint32, error) {
 	// Get the path of the current running process
 	runningPath, err := os.Executable()
 	if err != nil {
@@ -142,7 +162,7 @@ func startGUI() {
 	// Get current process token
 	var currentProcessToken windows.Token
 	currentProcess, _ := windows.GetCurrentProcess()
-	err = windows.OpenProcessToken(currentProcess, windows.TOKEN_DUPLICATE, &currentProcessToken)
+	err = windows.OpenProcessToken(currentProcess, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|windows.TOKEN_ADJUST_DEFAULT|windows.TOKEN_ASSIGN_PRIMARY, &currentProcessToken)
 	if err != nil {
 		log.Fatalf("Failed to get current process token: %v", err)
 	}
@@ -154,11 +174,22 @@ func startGUI() {
 		log.Fatalf("Failed to duplicate token: %v", err)
 	}
 
+	// Get the user session ID
+	sessionID := windows.WTSGetActiveConsoleSessionId()
+
+	// Set the token session ID to the active session
+	sessionIDBytes := (*byte)(unsafe.Pointer(&sessionID))
+	err = windows.SetTokenInformation(duplicatedToken, windows.TokenSessionId, sessionIDBytes, uint32(unsafe.Sizeof(sessionID)))
+
+	if err != nil {
+		log.Fatalf("Failed to set token information: %v", err)
+	}
+
 	// Get the user environment block
 	var envBlock *uint16
 	err = windows.CreateEnvironmentBlock(&envBlock, duplicatedToken, false)
 	if err != nil {
-		log.Fatalf("Failed to create environment block: %v", err)
+		return 0, fmt.Errorf("Failed to create environment block: %w", err)
 	}
 
 	// Define the process startup information
@@ -166,13 +197,16 @@ func startGUI() {
 	si.Cb = uint32(unsafe.Sizeof(*si))
 	si.Flags = windows.STARTF_USESHOWWINDOW
 	si.ShowWindow = windows.SW_SHOWDEFAULT
+	si.Desktop = windows.StringToUTF16Ptr("Winsta0\\Default") // new line here
 
 	// Create the process
 	pi := new(windows.ProcessInformation)
 	err = windows.CreateProcessAsUser(duplicatedToken, windows.StringToUTF16Ptr(patriotGUIPath), nil, nil, nil, false, CREATE_UNICODE_ENVIRONMENT, envBlock, nil, si, pi)
 	if err != nil {
-		log.Fatalf("Failed to create process: %v", err)
+		return 0, fmt.Errorf("Failed to create process: %w", err)
 	}
+
+	return uint32(pi.ProcessId), nil
 }
 
 func main() {
