@@ -184,24 +184,24 @@ func extractExecutables(inputPath, outputPath string) {
 							count++
 
 							err = ioutil.WriteFile(filename, data[pos:pos+extractedSize], 0644)
-                        if err != nil {
-                            log.Printf("Failed to write output file: %v", err)
-                        } else {
-                            fmt.Printf("Extracted file: %s\n", filename)
+							if err != nil {
+								log.Printf("Failed to write output file: %v", err)
+							} else {
+								fmt.Printf("Extracted file: %s\n", filename)
+							}
 						}
 					}
 				}
 			}
 		}
-	}
 
-	if count == 0 {
-		fmt.Println("No executables found in input file.")
-	} else {
-		fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
+		if count == 0 {
+			fmt.Println("No executables found in input file.")
+		} else {
+			fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
+		}
 	}
 }
-
 func min(a, b int) int {
 	if a < b {
 		return a
