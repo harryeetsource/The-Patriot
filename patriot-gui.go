@@ -141,7 +141,7 @@ func findMZHeaders(buffer []byte) []int {
 	return mzPositions
 }
 
-func extractExecutables(inputPath, outputPath string) {
+func extractExecutables(inputPath, outputPath, exeName string, processID uint32) {
 	data, err := ioutil.ReadFile(inputPath)
 	if err != nil {
 		log.Fatalf("Failed to read input file: %v", err)
@@ -180,7 +180,7 @@ func extractExecutables(inputPath, outputPath string) {
 
 						extractedSize := int(peSize) + padding
 						if peHeaderPos+extractedSize <= len(data) {
-							filename := fmt.Sprintf("%s%d.exe", outputPath, count)
+							filename := fmt.Sprintf("%s/%s_%d_%d.exe", outputPath, exeName, processID, count)
 							count++
 
 							err = ioutil.WriteFile(filename, data[pos:pos+extractedSize], 0644)
@@ -194,14 +194,15 @@ func extractExecutables(inputPath, outputPath string) {
 				}
 			}
 		}
+	}
 
-		if count == 0 {
-			fmt.Println("No executables found in input file.")
-		} else {
-			fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
-		}
+	if count == 0 {
+		fmt.Println("No executables found in input file.")
+	} else {
+		fmt.Printf("Extracted %d executables to output path: %s\n", count, outputPath)
 	}
 }
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -426,18 +427,21 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, rootF
 	}
 	defer syscall.CloseHandle(syscall.Handle(hProcess))
 
-	// Extract the executable name from exePath.
-_, exeName := filepath.Split(exePath)
+	// Extract the executable name from exePath
+	_, exeName := filepath.Split(exePath)
 
-// Create the memory dump file
-outputPath := filepath.Join(rootFolderPath, fmt.Sprintf("%s_%d.dmp", exeName, processID))
-outputFile, err := os.Create(outputPath)
-if err != nil {
-	return err
-}
-defer outputFile.Close()
+	// Create a new directory for the extracted executables named after the PID and process
+	pidFolder := fmt.Sprintf("%s_%d", exeName, processID)
+	fullExtractPath := filepath.Join(rootFolderPath, pidFolder)
+	os.Mkdir(fullExtractPath, os.ModePerm)
 
-
+	// Create the memory dump file
+	outputPath := filepath.Join(fullExtractPath, fmt.Sprintf("%s_%d.dmp", exeName, processID))
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer outputFile.Close()
 	type MemoryRange struct {
 		BaseAddress uintptr
 		RegionSize  uintptr
@@ -481,12 +485,13 @@ defer outputFile.Close()
 _, exeName = filepath.Split(exePath)
 
 // Create a new directory for the extracted executables
-pidFolder := fmt.Sprintf("PID_%d", processID)
+pidFolder = fmt.Sprintf("PID_%d", processID)
 extractedExecPath := filepath.Join(rootFolderPath, pidFolder)
 os.Mkdir(extractedExecPath, os.ModePerm)
 
+
 // Call extractExecutables on the memory dump
-extractExecutables(outputPath, extractedExecPath)
+extractExecutables(outputPath, fullExtractPath, exeName, processID)
 
 return nil
 }
