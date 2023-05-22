@@ -425,12 +425,17 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 	}
 	defer syscall.CloseHandle(syscall.Handle(hProcess))
 
-	outputPath := filepath.Join(folderName, fmt.Sprintf("%s_%d.dmp", exePath, processID))
-	outputFile, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer outputFile.Close()
+	// Extract the executable name from exePath.
+_, exeName := filepath.Split(exePath)
+
+// Create the memory dump file
+outputPath := filepath.Join(folderName, fmt.Sprintf("%s_%d.dmp", exeName, processID))
+outputFile, err := os.Create(outputPath)
+if err != nil {
+	return err
+}
+defer outputFile.Close()
+
 
 	type MemoryRange struct {
 		BaseAddress uintptr
@@ -471,9 +476,13 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 		log.Printf("Base address: %X, Region size: %X, Protection: %s\n", memRange.BaseAddress, memRange.RegionSize, protectionStr)
 	}
 
-	// Create a new directory for the extracted executables
-	extractedExecPath := filepath.Join(folderName, fmt.Sprintf("%s_%d_extracted", exePath, processID))
-	os.Mkdir(extractedExecPath, os.ModePerm)
+	// Extract the executable name from exePath.
+_, exeName = filepath.Split(exePath)
+
+// Create a new directory for the extracted executables
+extractedExecPath := filepath.Join(folderName, fmt.Sprintf("%s_%d_extracted", exeName, processID))
+os.Mkdir(extractedExecPath, os.ModePerm)
+
 
 	// Call extractExecutables on the memory dump
 	extractExecutables(outputPath, extractedExecPath)
@@ -1201,30 +1210,42 @@ func runPatriot() {
 	dumpButton := widget.NewButton("Dump Memory", func() {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Enter folder name")
-
+		var fullFolderPath string
+		
 		confirm := func(response bool) {
 			if response {
 				folderName := entry.Text
 				if folderName != "" {
-					err := os.MkdirAll(folderName, 0755)
+					// Get the path of the current executable
+					execPath, err := os.Executable()
+					if err != nil {
+						logOutput.SetText(fmt.Sprintf("Error getting executable path: %v", err))
+						return
+					}
+		
+					// Create the new folder in the same directory as the executable
+					execDir := filepath.Dir(execPath)
+					fullFolderPath = filepath.Join(execDir, folderName)
+		
+					err = os.MkdirAll(fullFolderPath, 0755)
 					if err != nil {
 						logOutput.SetText(fmt.Sprintf("Error creating folder: %v", err))
 						return
 					}
 				}
-
+	
 				progressChannel := make(chan float64)
 				statusChannel := make(chan string)
-
+	
 				go func() {
-					output, err := runMemoryDumper(folderName, progressChannel, statusChannel)
+					output, err := runMemoryDumper(fullFolderPath, progressChannel, statusChannel)
 					if err != nil {
 						logOutput.SetText(fmt.Sprintf("Error: %v", err))
 					} else {
 						logOutput.SetText(output)
 					}
 				}()
-
+	
 				go func() {
 					for {
 						select {
@@ -1237,12 +1258,13 @@ func runPatriot() {
 						}
 					}
 				}()
-
+	
 			}
 		}
-
+	
 		dialog.ShowCustomConfirm("Create Folder", "Create", "Cancel", entry, confirm, myWindow)
 	})
+	
 
 	dumpTab := container.NewVBox(
 		dumpButton,
