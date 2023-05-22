@@ -294,7 +294,7 @@ var (
 	procVirtualQueryEx           = modkernel32.NewProc("VirtualQueryEx")
 )
 
-func runMemoryDumper(folderName string, progressChannel chan float64, statusChannel chan string) (string, error) {
+func runMemoryDumper(rootFolderPath string, progressChannel chan float64, statusChannel chan string) (string, error) {
 	defer close(progressChannel)
 	defer close(statusChannel)
 	var output strings.Builder
@@ -331,7 +331,7 @@ func runMemoryDumper(folderName string, progressChannel chan float64, statusChan
 		processInfo := fmt.Sprintf("Process: %s (PID: %d)\n", syscall.UTF16ToString(process.szExeFile[:]), process.th32ProcessID)
 		output.WriteString(processInfo)
 
-		if err := dumpProcessMemory(process.th32ProcessID, process.szExeFile, folderName); err != nil {
+		if err := dumpProcessMemory(process.th32ProcessID, process.szExeFile, rootFolderPath); err != nil {
 			errMsg := fmt.Sprintf("Failed to dump memory: %v\n", err)
 			output.WriteString(errMsg)
 		} else {
@@ -416,7 +416,8 @@ func protectionFlagsToString(protect uint32) string {
 	return strings.Join(flags, "")
 }
 
-func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folderName string) error {
+func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, rootFolderPath string) error {
+
 	exePath := syscall.UTF16ToString(exeFile[:])
 
 	hProcess, _, err := procOpenProcess.Call(uintptr(PROCESS_ALL_ACCESS), uintptr(0), uintptr(processID))
@@ -429,7 +430,7 @@ func dumpProcessMemory(processID uint32, exeFile [syscall.MAX_PATH]uint16, folde
 _, exeName := filepath.Split(exePath)
 
 // Create the memory dump file
-outputPath := filepath.Join(folderName, fmt.Sprintf("%s_%d.dmp", exeName, processID))
+outputPath := filepath.Join(rootFolderPath, fmt.Sprintf("%s_%d.dmp", exeName, processID))
 outputFile, err := os.Create(outputPath)
 if err != nil {
 	return err
@@ -480,14 +481,14 @@ defer outputFile.Close()
 _, exeName = filepath.Split(exePath)
 
 // Create a new directory for the extracted executables
-extractedExecPath := filepath.Join(folderName, fmt.Sprintf("%s_%d_extracted", exeName, processID))
+pidFolder := fmt.Sprintf("PID_%d", processID)
+extractedExecPath := filepath.Join(rootFolderPath, pidFolder)
 os.Mkdir(extractedExecPath, os.ModePerm)
 
+// Call extractExecutables on the memory dump
+extractExecutables(outputPath, extractedExecPath)
 
-	// Call extractExecutables on the memory dump
-	extractExecutables(outputPath, extractedExecPath)
-
-	return nil
+return nil
 }
 
 func execCommandWithPrompt(command string, args ...string) {
