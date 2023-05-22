@@ -978,7 +978,9 @@ type CustomTheme struct {
 }
 
 func (c CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	if name == theme.ColorNameForeground || name == theme.ColorNameDisabled {
+	if name == theme.ColorNameForeground ||
+		name == theme.ColorNameDisabled ||
+		name == theme.ColorNamePrimary {
 		return color.RGBA{0, 255, 0, 255} // Green color
 	}
 	return c.originalTheme.Color(name, variant)
@@ -1030,7 +1032,9 @@ func runPatriot() {
 	// Your existing main function code goes here
 	os.Setenv("FYNE_RENDER", "software")
 	myApp := app.New()
-	myApp.Settings().SetTheme(theme.DarkTheme())
+	// Create custom theme based on dark theme and set it
+	customTheme := newCustomTheme(theme.DarkTheme())
+	myApp.Settings().SetTheme(customTheme)
 	myWindow := myApp.NewWindow("The Patriot")
 	progressBar := widget.NewProgressBar()
 	numCommands := 18
